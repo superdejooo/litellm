@@ -598,6 +598,42 @@ def test_prepare_mcp_server_headers_withholds_global_authorization_when_scope_fa
     assert not extra_headers or "authorization" not in {k.lower() for k in extra_headers}
 
 
+def test_prepare_mcp_server_headers_logs_the_withheld_authorization_and_the_per_server_header(caplog):
+    """The withheld bearer turns into an upstream 401 logged only at DEBUG, so the decision itself must be
+    visible and name the header that binds a token to this one server"""
+    delegate = _client_forwarded_mode_server("Od Fanout", MCPAuth.oauth_delegate)
+    second_consumer = _client_forwarded_mode_server("tp-fanout", MCPAuth.true_passthrough)
+
+    with caplog.at_level("WARNING", logger="LiteLLM"):
+        _prepare_headers_in_scope(delegate, [delegate, second_consumer])
+
+    assert "withholding the caller's Authorization from MCP server 'Od Fanout'" in caplog.text
+    assert "x-mcp-od_fanout-authorization" in caplog.text
+
+
+def test_prepare_mcp_server_headers_does_not_log_withholding_the_admission_key(caplog):
+    """An Authorization that is the caller's LiteLLM key was never meant for an upstream"""
+    from litellm.proxy._experimental.mcp_server.server import (
+        _prepare_mcp_server_headers,
+    )
+
+    delegate = _client_forwarded_mode_server("od-admission", MCPAuth.oauth_delegate)
+    second_consumer = _client_forwarded_mode_server("tp-admission", MCPAuth.true_passthrough)
+
+    with caplog.at_level("WARNING", logger="LiteLLM"):
+        _prepare_mcp_server_headers(
+            server=delegate,
+            mcp_server_auth_headers=None,
+            mcp_auth_header=None,
+            oauth2_headers={"Authorization": "Bearer sk-litellm-key"},
+            raw_headers={"authorization": "Bearer sk-litellm-key"},
+            user_api_key_auth=UserAPIKeyAuth(api_key="sk-litellm-key"),
+            scope_servers=[delegate, second_consumer],
+        )
+
+    assert "withholding" not in caplog.text
+
+
 def test_prepare_mcp_server_headers_forwards_global_authorization_to_sole_consumer():
     """Non-consuming servers (static api_key) in scope do not make the forward ambiguous."""
     delegate = _client_forwarded_mode_server("od-sole", MCPAuth.oauth_delegate)

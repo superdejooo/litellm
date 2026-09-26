@@ -73,6 +73,7 @@ from litellm.proxy._experimental.mcp_server.utils import (
     iter_known_server_prefixes,
     logging_safe_mcp_headers,
     match_known_tool_name,
+    sanitize_mcp_alias_for_header,
 )
 from litellm.proxy._types import (
     ProxyException,
@@ -473,9 +474,11 @@ if MCP_AVAILABLE:
     )
     from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
         MCPServerManager,
+        _authorization_is_litellm_admission_credential,
         _caller_authorization_fans_out,
         _client_forwarded_authorization_headers,
         _consumes_caller_authorization,
+        _raw_header_value,
         _resolve_openapi_tool_auth,
         _should_strip_caller_authorization,
         global_mcp_server_manager,
@@ -1966,6 +1969,18 @@ if MCP_AVAILABLE:
         withhold_forwarded_authorization: Final = (
             is_client_forwarded_mode or is_legacy_delegate
         ) and _caller_authorization_fans_out(server, scope_servers)
+        if (
+            withhold_forwarded_authorization
+            and ((oauth2_headers or {}).get("Authorization") or _raw_header_value(raw_headers, "authorization"))
+            and not _authorization_is_litellm_admission_credential(raw_headers, user_api_key_auth)
+        ):
+            verbose_logger.warning(
+                "MCP: withholding the caller's Authorization from MCP server %r because another server in this "
+                "listing also consumes it; the upstream will likely answer 401. Send the token as "
+                "x-mcp-%s-authorization to bind it to this server.",
+                server.name,
+                sanitize_mcp_alias_for_header(server.alias or server.server_name or server.name),
+            )
         if server.auth_type == MCPAuth.oauth2:
             # For OAuth2 M2M servers, upstream Authorization must come from
             # client_credentials token fetch, never from caller headers.
