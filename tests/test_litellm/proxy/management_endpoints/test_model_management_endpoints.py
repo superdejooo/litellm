@@ -3,6 +3,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import Iterator, Mapping
+from types import MappingProxyType
 from typing import Dict, Final, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -3731,6 +3732,222 @@ class TestModelInfoServerDerivedPricingFilter:
         assert "input_cost_per_token" not in written
         assert written["id"] == model_id, "filtering must not mint a fresh deployment id"
         assert written["access_groups"] == ["prod"]
+
+
+_PRICED_UPSTREAM: Final = "https://upstream.example"
+_FLAT_RATES: Final = MappingProxyType(
+    {
+        "input_cost_per_token": 1.25e-06,
+        "output_cost_per_token": 4.25e-06,
+        "cache_read_input_token_cost": 1.5e-07,
+        "cache_creation_input_token_cost": 1.25e-06,
+    }
+)
+_GROK_RATES: Final = MappingProxyType(
+    {
+        "input_cost_per_token": 2e-06,
+        "output_cost_per_token": 6e-06,
+        "cache_read_input_token_cost": 5e-07,
+        "cache_creation_input_token_cost": 2e-06,
+    }
+)
+_TIERED_RATES: Final = MappingProxyType(
+    {
+        "input_cost_per_token": 1.2e-06,
+        "output_cost_per_token": 6.0e-06,
+        "cache_read_input_token_cost": 1.2e-06,
+        "cache_creation_input_token_cost": 1.2e-06,
+        "tiered_pricing": [
+            {"range": [0, 32768], "input_cost_per_token": 1.2e-06, "output_cost_per_token": 6.0e-06},
+            {"range": [32768, 131072], "input_cost_per_token": 2.4e-06, "output_cost_per_token": 1.2e-05},
+            {"range": [131072, 262144], "input_cost_per_token": 3.0e-06, "output_cost_per_token": 1.5e-05},
+        ],
+    }
+)
+_ANTHROPIC_MESSAGE: Final = MappingProxyType(
+    {
+        "id": "msg_priced",
+        "type": "message",
+        "role": "assistant",
+        "model": "upstream-model",
+        "content": [{"type": "text", "text": "ok"}],
+        "stop_reason": "end_turn",
+        "stop_sequence": None,
+        "usage": {
+            "input_tokens": 20_000,
+            "cache_read_input_tokens": 100_000,
+            "cache_creation_input_tokens": 1_000,
+            "output_tokens": 2_000,
+        },
+    }
+)
+_RESPONSES_RESULT: Final = MappingProxyType(
+    {
+        "id": "resp_priced",
+        "object": "response",
+        "created_at": 1_700_000_000,
+        "status": "completed",
+        "model": "grok-4.6",
+        "output": [
+            {
+                "type": "message",
+                "id": "msg_priced",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "ok", "annotations": []}],
+            }
+        ],
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "usage": {
+            "input_tokens": 120_000,
+            "input_tokens_details": {"cached_tokens": 100_000},
+            "output_tokens": 2_000,
+            "output_tokens_details": {"reasoning_tokens": 0},
+            "total_tokens": 122_000,
+        },
+    }
+)
+
+
+class TestModelNewPricingBillsThroughTheDBLoader:
+    """A deployment added with POST /model/new bills from the row the proxy loads back.
+
+    Only its litellm_params pricing survives the write (see TestModelInfoServerDerivedPricingFilter).
+    """
+
+    @staticmethod
+    async def _stored_row(
+        litellm_params: Mapping[str, object], model_info: Mapping[str, object]
+    ) -> LiteLLM_ProxyModelTable:
+        from litellm.proxy.management_endpoints.model_management_endpoints import add_new_model
+
+        model_id: Final = f"priced-{uuid.uuid4()}"
+        create: Final = AsyncMock(side_effect=lambda data: LiteLLM_ProxyModelTable(**data))
+        mock_prisma: Final = MagicMock()
+        mock_prisma.db.litellm_proxymodeltable.create = create
+        mock_proxy_config: Final = MagicMock()
+        mock_proxy_config.add_deployment = AsyncMock(return_value=ReconcileOutcome(still_desired=None, live_after=None))
+        mock_router: Final = MagicMock()
+        mock_router.get_model_ids.return_value = [model_id]
+
+        ps: Final = "litellm.proxy.proxy_server"
+        encrypt: Final = "litellm.proxy.management_endpoints.model_management_endpoints.encrypt_value_helper"
+        with (
+            patch(f"{ps}.prisma_client", mock_prisma),
+            patch(f"{ps}.store_model_in_db", True),
+            patch(f"{ps}.proxy_config", mock_proxy_config),
+            patch(f"{ps}.proxy_logging_obj", MagicMock()),
+            patch(f"{ps}.general_settings", {}),
+            patch(f"{ps}.premium_user", True),
+            patch(f"{ps}.llm_router", mock_router),
+            patch(encrypt, side_effect=lambda value, **kwargs: value),
+        ):
+            await add_new_model(
+                model_params=Deployment(
+                    model_name="priced-db-model",
+                    litellm_params=LiteLLM_Params(**litellm_params),
+                    model_info={"id": model_id, **model_info},
+                ),
+                user_api_key_dict=UserAPIKeyAuth(user_id="test-admin", user_role=LitellmUserRoles.PROXY_ADMIN),
+            )
+        return LiteLLM_ProxyModelTable(**create.call_args.kwargs["data"])
+
+    @staticmethod
+    async def _logged_cost(row: LiteLLM_ProxyModelTable, route: str, monkeypatch: pytest.MonkeyPatch) -> float:
+        import httpx
+        import respx
+
+        import litellm
+        from litellm.integrations.custom_logger import CustomLogger
+        from litellm.proxy.proxy_server import ProxyConfig
+
+        class LoggedCost(CustomLogger):
+            def __init__(self) -> None:
+                super().__init__()
+                self.costs: tuple[float, ...] = ()
+                self.logged = asyncio.Event()
+
+            async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                self.costs = (*self.costs, kwargs["standard_logging_object"]["response_cost"])
+                self.logged.set()
+
+        logger: Final = LoggedCost()
+        monkeypatch.setattr(litellm, "callbacks", [logger])
+        monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+        router: Final = Router(model_list=[])
+        monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+        assert ProxyConfig()._add_deployment(db_models=[row]) == 1
+
+        messages: Final = [{"role": "user", "content": "bill me"}]
+        with respx.mock(assert_all_called=True) as upstream:
+            if route == "messages":
+                upstream.post(f"{_PRICED_UPSTREAM}/v1/messages").mock(
+                    return_value=httpx.Response(200, json=dict(_ANTHROPIC_MESSAGE))
+                )
+                await router.aanthropic_messages(model=row.model_name, messages=messages, max_tokens=64)
+            else:
+                upstream.post(f"{_PRICED_UPSTREAM}/v1/responses").mock(
+                    return_value=httpx.Response(200, json=dict(_RESPONSES_RESULT))
+                )
+                await router.acompletion(model=row.model_name, messages=messages)
+        await asyncio.wait_for(logger.logged.wait(), timeout=10)
+        assert len(logger.costs) == 1
+        return logger.costs[0]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("litellm_params", "model_info", "route", "expected"),
+        [
+            pytest.param(
+                {
+                    "model": "muse-spark-1.3",
+                    "custom_llm_provider": "anthropic",
+                    "api_base": _PRICED_UPSTREAM,
+                    **_FLAT_RATES,
+                },
+                {},
+                "messages",
+                20_000 * 1.25e-06 + 100_000 * 1.5e-07 + 1_000 * 1.25e-06 + 2_000 * 4.25e-06,
+                id="anthropic-messages",
+            ),
+            pytest.param(
+                {
+                    "model": "qwen3-max-db",
+                    "custom_llm_provider": "anthropic",
+                    "api_base": _PRICED_UPSTREAM,
+                    **_TIERED_RATES,
+                },
+                {},
+                "messages",
+                121_000 * 2.4e-06 + 2_000 * 1.2e-05,
+                id="anthropic-messages-tiered",
+            ),
+            pytest.param(
+                {"model": "openai/grok-4.6", "api_base": f"{_PRICED_UPSTREAM}/v1", **_GROK_RATES},
+                {"mode": "responses"},
+                "chat",
+                20_000 * 2e-06 + 100_000 * 5e-07 + 2_000 * 6e-06,
+                id="chat-to-responses-bridge",
+            ),
+        ],
+    )
+    async def test_litellm_params_pricing_bills_the_request(
+        self,
+        litellm_params: Mapping[str, object],
+        model_info: Mapping[str, object],
+        route: str,
+        expected: float,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        row: Final = await self._stored_row(
+            litellm_params={**litellm_params, "api_key": "sk-upstream"}, model_info=model_info
+        )
+
+        cost: Final = await self._logged_cost(row, route, monkeypatch)
+
+        assert cost == pytest.approx(expected, rel=1e-9)
 
 
 class TestGetModelInfoWithIdBlocked:
