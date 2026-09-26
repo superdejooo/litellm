@@ -475,6 +475,7 @@ if MCP_AVAILABLE:
         MCPServerManager,
         _caller_authorization_fans_out,
         _client_forwarded_authorization_headers,
+        _consumes_caller_authorization,
         _resolve_openapi_tool_auth,
         _should_strip_caller_authorization,
         global_mcp_server_manager,
@@ -1961,9 +1962,10 @@ if MCP_AVAILABLE:
         # x-mcp-{alias}-authorization. The decision is computed once so BOTH the forwarding branch and
         # the extra_headers copy loop below honor it — otherwise a server that lists Authorization in
         # extra_headers would re-copy the withheld bearer from raw_headers and replay it anyway.
-        withhold_forwarded_authorization: Final = is_client_forwarded_mode and _caller_authorization_fans_out(
-            server, scope_servers
-        )
+        is_legacy_delegate: Final = server.auth_type == MCPAuth.oauth2 and _consumes_caller_authorization(server)
+        withhold_forwarded_authorization: Final = (
+            is_client_forwarded_mode or is_legacy_delegate
+        ) and _caller_authorization_fans_out(server, scope_servers)
         if server.auth_type == MCPAuth.oauth2:
             # For OAuth2 M2M servers, upstream Authorization must come from
             # client_credentials token fetch, never from caller headers.
@@ -1976,10 +1978,13 @@ if MCP_AVAILABLE:
                 # token, so drop the caller-forwarded Authorization (apply-if-absent would
                 # otherwise let it shadow the resolved token). Delegate keeps it. Centralized
                 # via _should_strip_caller_authorization to match _call_regular_mcp_tool.
-                if extra_headers and _should_strip_caller_authorization(
-                    mcp_server=server,
-                    raw_headers=raw_headers,
-                    user_api_key_auth=user_api_key_auth,
+                if extra_headers and (
+                    withhold_forwarded_authorization
+                    or _should_strip_caller_authorization(
+                        mcp_server=server,
+                        raw_headers=raw_headers,
+                        user_api_key_auth=user_api_key_auth,
+                    )
                 ):
                     extra_headers = without_header(extra_headers, DEFAULT_CREDENTIAL_HEADER)
         elif is_client_forwarded_mode:

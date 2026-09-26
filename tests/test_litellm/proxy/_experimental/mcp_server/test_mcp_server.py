@@ -631,6 +631,45 @@ def test_prepare_mcp_server_headers_scope_counts_legacy_delegate_as_consumer():
     assert not extra_headers or "authorization" not in {k.lower() for k in extra_headers}
 
 
+def _legacy_delegate_server(server_id: str, extra_headers=None) -> MCPServer:
+    return MCPServer(
+        server_id=server_id,
+        name=server_id,
+        transport=MCPTransport.http,
+        auth_type=MCPAuth.oauth2,
+        delegate_auth_to_upstream=True,
+        extra_headers=extra_headers,
+    )
+
+
+def test_prepare_mcp_server_headers_withholds_authorization_from_legacy_delegates_that_fan_out():
+    """Two legacy oauth2 + delegate_auth_to_upstream servers in one listing scope: the caller's
+    single bearer must reach neither, including via an Authorization entry in extra_headers"""
+    first = _legacy_delegate_server("legacy-a", extra_headers=["Authorization"])
+    second = _legacy_delegate_server("legacy-b")
+    scope = [first, second]
+
+    for server in scope:
+        _, extra_headers = _prepare_headers_in_scope(server, scope)
+        assert not extra_headers or "authorization" not in {k.lower() for k in extra_headers}
+
+
+def test_prepare_mcp_server_headers_forwards_authorization_to_sole_legacy_delegate():
+    """A legacy delegate that is the only Authorization consumer in scope keeps the caller's bearer"""
+    legacy = _legacy_delegate_server("legacy-sole")
+    static_server = MCPServer(
+        server_id="static-beside-legacy",
+        name="static-beside-legacy",
+        transport=MCPTransport.http,
+        auth_type=MCPAuth.api_key,
+        authentication_token="static-key",
+    )
+
+    _, extra_headers = _prepare_headers_in_scope(legacy, [legacy, static_server])
+
+    assert extra_headers == {"Authorization": "Bearer upstream-token"}
+
+
 def test_prepare_mcp_server_headers_fanout_withhold_survives_extra_headers_loop():
     """Regression: when fan-out withholds the request-wide Authorization from a client-forwarded
     server, the later server.extra_headers copy loop must not re-add it from raw_headers even if
