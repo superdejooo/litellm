@@ -77,11 +77,12 @@ def _should_inject(credential_value: object, current: object) -> bool:
     return current is None or (
         isinstance(credential_value, str)
         and is_file_credential_ref(credential_value)
-        and was_resolved_from_file_credential(credential_value, current)
+        and (current == credential_value or was_resolved_from_file_credential(credential_value, current))
     )
 
 
-def _materialize(credential_value: object) -> object:
+def materialize_credential_value(credential_value: object) -> object:
+    """``credential_value`` with a ``file://`` ref replaced by the file's content; other values pass through."""
     if isinstance(credential_value, str) and is_file_credential_ref(credential_value):
         return resolve_file_credential(credential_value)
     return credential_value
@@ -93,7 +94,7 @@ def credential_values_to_inject(
     """The credential values to write into ``request``: keys it lacks or holds as None, and stale ``file://`` copies."""
     return MappingProxyType(
         {
-            key: _materialize(value)
+            key: materialize_credential_value(value)
             for key, value in credential_values.items()
             if _should_inject(value, request.get(key))
         }
@@ -110,10 +111,14 @@ class CredentialAccessor:
 
     @staticmethod
     def get_credential_values(credential_name: str) -> dict:
-        """Safe accessor for credentials."""
+        """A copy of the credential's values with every ``file://`` ref read from its file.
 
+        Raises ValueError when a referenced file is missing, unreadable or empty.
+        """
         credential: Final = CredentialAccessor.find_credential(credential_name)
-        return {} if credential is None else credential.credential_values.copy()
+        if credential is None:
+            return {}
+        return {key: materialize_credential_value(value) for key, value in credential.credential_values.items()}
 
     @staticmethod
     def upsert_credentials(credentials: list[CredentialItem]):

@@ -5549,6 +5549,37 @@ def test_get_deployment_credentials_with_provider_resolves_credential_name():
     litellm.credential_list = []
 
 
+def test_get_deployment_credentials_with_provider_reads_a_file_credential(monkeypatch, tmp_path):
+    from litellm.types.utils import CredentialItem
+
+    key_file = tmp_path / "key"
+    key_file.write_text("sk-from-file\n", encoding="utf-8")
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="file-cred",
+                credential_info={},
+                credential_values={"api_key": f"file://{key_file}"},
+            )
+        ],
+    )
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "gpt-4o",
+                "litellm_params": {"model": "openai/gpt-4o", "litellm_credential_name": "file-cred"},
+            }
+        ],
+    )
+
+    credentials = router.get_deployment_credentials_with_provider(model_id="gpt-4o")
+
+    assert credentials is not None
+    assert credentials["api_key"] == "sk-from-file"
+
+
 def test_get_deployment_credentials_with_provider_bedrock_batch_fields():
     """
     Test that get_deployment_credentials_with_provider returns the deployment's

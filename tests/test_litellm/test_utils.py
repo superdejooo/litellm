@@ -6718,6 +6718,21 @@ def test_load_credentials_from_list_picks_up_a_swapped_file_on_a_reused_kwargs_d
     assert retry_kwargs_copied_before_the_swap["api_key"] == "glm-key-b"
 
 
+def test_load_credentials_from_list_replaces_a_file_uri_already_copied_into_the_request(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, file_credential_clock: _FileCredentialClock
+) -> None:
+    from litellm.utils import load_credentials_from_list
+
+    key_file = tmp_path / "key"
+    key_file.write_text("glm-key-from-file", encoding="utf-8")
+    _load_credential(monkeypatch, {"api_key": f"file://{key_file}"})
+    request_kwargs = {"litellm_credential_name": "zai_api", "api_key": f"file://{key_file}"}
+
+    load_credentials_from_list(request_kwargs)
+
+    assert request_kwargs["api_key"] == "glm-key-from-file"
+
+
 @pytest.mark.parametrize("credential_value", ["sk-literal", "os.environ/ZAI_API_KEY"])
 def test_load_credentials_from_list_passes_non_file_values_through_verbatim(
     monkeypatch: pytest.MonkeyPatch, credential_value: str

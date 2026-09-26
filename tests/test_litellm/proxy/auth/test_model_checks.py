@@ -432,6 +432,42 @@ def test_wildcard_credential_hydration_preserves_deployment_params(
     }
 
 
+def test_wildcard_credential_hydration_reads_a_file_credential(monkeypatch, tmp_path):
+    import litellm
+    from litellm.proxy.auth import model_checks
+    from litellm.proxy.auth.model_checks import get_known_models_from_wildcard
+    from litellm.types.router import LiteLLM_Params
+    from litellm.types.utils import CredentialItem
+
+    key_file = tmp_path / "key"
+    key_file.write_text("sk-from-file", encoding="utf-8")
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="openai-credential",
+                credential_info={},
+                credential_values={"api_key": f"file://{key_file}"},
+            )
+        ],
+    )
+    api_keys_sent = []
+
+    def fake_get_provider_models(provider, litellm_params=None):
+        api_keys_sent.append(litellm_params.api_key)
+        return ["gpt-4o"]
+
+    monkeypatch.setattr(model_checks, "get_provider_models", fake_get_provider_models)
+
+    get_known_models_from_wildcard(
+        wildcard_model="openai/*",
+        litellm_params=LiteLLM_Params(model="openai/*", litellm_credential_name="openai-credential"),
+    )
+
+    assert api_keys_sent == ["sk-from-file"]
+
+
 def test_wildcard_custom_prefix_does_not_stack_provider_prefix(monkeypatch):
     """Regression test for #30358.
 

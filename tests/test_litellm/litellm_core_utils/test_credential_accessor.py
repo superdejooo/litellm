@@ -2,13 +2,17 @@ from pathlib import Path
 
 import pytest
 
+import litellm
 from litellm.litellm_core_utils import credential_accessor
 from litellm.litellm_core_utils.credential_accessor import (
     FILE_CREDENTIAL_SCHEME,
+    CredentialAccessor,
+    credential_values_to_inject,
     is_file_credential_ref,
     resolve_file_credential,
     was_resolved_from_file_credential,
 )
+from litellm.types.utils import CredentialItem
 
 
 class FakeClock:
@@ -143,3 +147,53 @@ def test_is_file_credential_ref_only_claims_file_uris(value: object, expected: b
 )
 def test_file_credential_ttl_falls_back_to_the_default_outside_a_sane_range(raw: str | None, expected: float) -> None:
     assert credential_accessor._parse_file_credential_ttl_seconds(raw) == expected
+
+
+def _load_credential(monkeypatch: pytest.MonkeyPatch, credential_values: dict[str, str]) -> None:
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [CredentialItem(credential_name="cred", credential_values=credential_values, credential_info={})],
+    )
+
+
+def test_get_credential_values_reads_file_refs_and_passes_other_values_through(
+    monkeypatch: pytest.MonkeyPatch, clock: FakeClock, token_file: Path
+) -> None:
+    token_file.write_text("sk-from-file\n", encoding="utf-8")
+    _load_credential(monkeypatch, {"api_key": _ref(token_file), "api_base": "https://api.example.com"})
+
+    assert CredentialAccessor.get_credential_values("cred") == {
+        "api_key": "sk-from-file",
+        "api_base": "https://api.example.com",
+    }
+
+
+def test_get_credential_values_raises_instead_of_handing_out_an_unreadable_ref(
+    monkeypatch: pytest.MonkeyPatch, clock: FakeClock, token_file: Path
+) -> None:
+    _load_credential(monkeypatch, {"api_key": _ref(token_file)})
+
+    with pytest.raises(ValueError):
+        CredentialAccessor.get_credential_values("cred")
+
+
+def test_get_credential_values_does_not_resolve_into_the_stored_credential(
+    monkeypatch: pytest.MonkeyPatch, clock: FakeClock, token_file: Path
+) -> None:
+    token_file.write_text("sk-from-file", encoding="utf-8")
+    _load_credential(monkeypatch, {"api_key": _ref(token_file)})
+
+    CredentialAccessor.get_credential_values("cred")
+
+    assert litellm.credential_list[0].credential_values == {"api_key": _ref(token_file)}
+
+
+def test_a_file_ref_already_copied_into_the_request_is_replaced_by_its_value(
+    clock: FakeClock, token_file: Path
+) -> None:
+    token_file.write_text("sk-from-file", encoding="utf-8")
+
+    assert credential_values_to_inject({"api_key": _ref(token_file)}, {"api_key": _ref(token_file)}) == {
+        "api_key": "sk-from-file"
+    }

@@ -4608,6 +4608,32 @@ def test_resolve_model_not_in_any_config():
 # --- Integration tests for _apply_credential_overrides_from_model_config ---
 
 
+def test_apply_overrides_reads_a_file_credential(monkeypatch, tmp_path):
+    key_file = tmp_path / "key"
+    key_file.write_text("key-from-file\n", encoding="utf-8")
+    monkeypatch.setattr(litellm, "enable_model_config_credential_overrides", True)
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="team-file-cred",
+                credential_info={},
+                credential_values={"api_base": "https://team.openai.azure.com/", "api_key": f"file://{key_file}"},
+            )
+        ],
+    )
+    data = {"model": "azure/gpt-4"}
+    user_api_key_dict = UserAPIKeyAuth(
+        api_key="test-key",
+        team_metadata={"model_config": {"defaultconfig": {"azure": {"litellm_credentials": "team-file-cred"}}}},
+    )
+
+    _apply_credential_overrides_from_model_config(data=data, user_api_key_dict=user_api_key_dict)
+
+    assert data["api_key"] == "key-from-file"
+
+
 def test_apply_overrides_project_model_specific(setup_test_credentials):
     """Scenario 2: Hotel Rec App -> gpt-4-vision -> project model-specific."""
     data = {"model": "gpt-4-vision"}

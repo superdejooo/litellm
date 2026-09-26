@@ -33,6 +33,7 @@ from litellm.constants import (
     BEDROCK_AGENT_RUNTIME_PASS_THROUGH_ROUTES,
 )
 from litellm.litellm_core_utils.aws_partition import get_aws_dns_suffix
+from litellm.litellm_core_utils.credential_accessor import CredentialAccessor
 from litellm.llms.anthropic.common_utils import AnthropicModelInfo
 from litellm.llms.azure.passthrough.transformation import foreign_azure_deployment
 from litellm.llms.custom_httpx.http_handler import get_async_httpx_client
@@ -2779,8 +2780,9 @@ async def cursor_proxy_route(
     if cursor_api_key is None:
         for credential in litellm.credential_list:
             if credential.credential_info and credential.credential_info.get("custom_llm_provider") == "cursor":
-                cursor_api_key = credential.credential_values.get("api_key")
-                credential_api_base = credential.credential_values.get("api_base")
+                cursor_credential_values = CredentialAccessor.get_credential_values(credential.credential_name)
+                cursor_api_key = cursor_credential_values.get("api_key")
+                credential_api_base = cursor_credential_values.get("api_base")
                 if credential_api_base:
                     base_target_url = credential_api_base
                 break

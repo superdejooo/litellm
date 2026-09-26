@@ -71,6 +71,36 @@ def test_get_credentials_for_vector_store():
     assert result == {}
 
 
+def test_get_credentials_for_vector_store_reads_a_file_credential(monkeypatch, tmp_path):
+    from litellm.types.utils import CredentialItem
+
+    key_file = tmp_path / "key"
+    key_file.write_text("sk-from-file", encoding="utf-8")
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="file-cred", credential_info={}, credential_values={"api_key": f"file://{key_file}"}
+            )
+        ],
+    )
+    registry = VectorStoreRegistry(
+        [
+            LiteLLM_ManagedVectorStore(
+                vector_store_id="vs-file",
+                custom_llm_provider="openai",
+                vector_store_name="file-store",
+                litellm_credential_name="file-cred",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        ]
+    )
+
+    assert registry.get_credentials_for_vector_store("vs-file") == {"api_key": "sk-from-file"}
+
+
 def test_add_vector_store_to_registry():
     """Test that add_vector_store_to_registry adds vector store correctly when there are pre-existing stores"""
     # Create pre-existing vector stores

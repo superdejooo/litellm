@@ -5711,3 +5711,37 @@ async def test_anthropic_route_skips_a_deployment_with_a_malformed_api_base(monk
     )
 
     assert "sk-ant-real" in repr(create_route.call_args.kwargs["custom_headers"])
+
+
+@pytest.mark.asyncio
+async def test_cursor_route_reads_a_file_credential_from_the_credential_list(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from litellm.types.utils import CredentialItem
+
+    key_file: Final = tmp_path / "cursor-key"
+    key_file.write_text("sk-cursor-from-file\n", encoding="utf-8")
+    create_route, _ = _route_passthrough_calls(monkeypatch, [])
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="cursor-ui",
+                credential_info={"custom_llm_provider": "cursor"},
+                credential_values={"api_key": f"file://{key_file}"},
+            )
+        ],
+    )
+
+    await cursor_proxy_route(
+        endpoint="v0/me",
+        request=_passthrough_request(),
+        fastapi_response=MagicMock(spec=Response),
+        user_api_key_dict=UserAPIKeyAuth(api_key="virtual-key"),
+    )
+
+    assert create_route.call_args.kwargs["custom_headers"] == {
+        "Authorization": f"Basic {base64.b64encode(b'sk-cursor-from-file:').decode()}"
+    }

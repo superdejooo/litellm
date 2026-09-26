@@ -154,9 +154,9 @@ class PassthroughEndpointRouter:
         if self._get_deployment_provider(litellm_params) != custom_llm_provider:
             return None
         credential_name: Final = litellm_params.get("litellm_credential_name")
-        credential_values: Final = (
-            CredentialAccessor.get_credential_values(credential_name) if credential_name is not None else None
-        )
+        credential: Final = CredentialAccessor.find_credential(credential_name) if credential_name is not None else None
+        # Raw values: resolving every file here would read, and fail on, keys of deployments the origin check skips
+        credential_values: Final = credential.credential_values if credential is not None else None
         api_base: Final = _get_str_value(credential_values, "api_base") or litellm_params.get("api_base")
         deployment_region: Final = self._get_region_name_from_api_base(
             custom_llm_provider=custom_llm_provider,

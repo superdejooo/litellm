@@ -152,6 +152,31 @@ def test_file_credential_is_resolved_instead_of_returned_verbatim(monkeypatch, t
         passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
 
 
+def test_unreadable_file_credential_of_a_skipped_deployment_does_not_fail_the_lookup(tmp_path):
+    CredentialAccessor.upsert_credentials(
+        [
+            CredentialItem(
+                credential_name="cred_meta",
+                credential_values={"api_key": f"file://{tmp_path / 'absent'}", "api_base": "https://api.meta.ai"},
+                credential_info={},
+            )
+        ]
+    )
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[
+                _flagged_deployment("anthropic/muse-spark", litellm_credential_name="cred_meta"),
+                _flagged_deployment("anthropic/claude-fable-5", api_key="sk-ant-real"),
+            ]
+        )
+    )
+
+    assert (
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
+        == "sk-ant-real"
+    )
+
+
 def test_missing_credential_and_no_inline_key_falls_back_to_env(monkeypatch):
     llm_router = litellm.Router(
         model_list=[_flagged_deployment("openai/gpt-4o", litellm_credential_name="cred_deleted")]
