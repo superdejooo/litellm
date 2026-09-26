@@ -82,6 +82,23 @@ def test_minimax_chat_config_url_variations():
     assert url4 == "https://api.minimax.io/v1/chat/completions"
 
 
+@pytest.mark.parametrize(
+    "api_base",
+    ["https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"],
+)
+def test_minimax_chat_url_strips_anthropic_base(api_base):
+    """A deployment configured with MiniMax's Anthropic base URL must still hit the OpenAI chat endpoint."""
+    url = MinimaxChatConfig().get_complete_url(
+        api_base=api_base,
+        api_key=None,
+        model="MiniMax-M2.1",
+        optional_params={},
+        litellm_params={},
+    )
+
+    assert url == api_base.removesuffix("/anthropic") + "/v1/chat/completions"
+
+
 def test_minimax_provider_routing():
     """Test that minimax provider is properly routed"""
     from litellm.litellm_core_utils.get_llm_provider_logic import get_llm_provider

@@ -54,8 +54,8 @@ class MinimaxChatConfig(OpenAIGPTConfig):
         Get the complete URL for MiniMax OpenAI API.
         Override to ensure we use MiniMax's endpoint.
         """
-        # Get the base URL (either provided or default MiniMax endpoint)
-        base_url: Final = self.get_api_base(api_base=api_base)
+        # A deployment shared with /v1/messages carries MiniMax's Anthropic base URL
+        base_url: Final = self.get_api_base(api_base=api_base).removesuffix("/anthropic")
 
         # Ensure it ends with /chat/completions
         if base_url.endswith("/chat/completions"):
