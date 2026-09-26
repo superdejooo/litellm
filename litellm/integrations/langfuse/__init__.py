@@ -25,11 +25,31 @@ def _resolve_secret_reference(value: object) -> str | None:
     return value
 
 
+_PUBLIC_KEY_PARAMS: Final = ("langfuse_public_key",)
+_SECRET_KEY_PARAMS: Final = ("langfuse_secret_key", "langfuse_secret")
+_HOST_PARAMS: Final = ("langfuse_host",)
+
+
+def _named_reference(litellm_params: "PromptLiteLLMParams", param_names: tuple[str, ...]) -> object:
+    return next((value for name in param_names if (value := getattr(litellm_params, name, None)) is not None), None)
+
+
 def _resolve_credential(
     litellm_params: "PromptLiteLLMParams", param_names: tuple[str, ...], env_var: str
 ) -> str | None:
-    configured: Final = (_resolve_secret_reference(getattr(litellm_params, name, None)) for name in param_names)
-    return next((value for value in configured if value), None) or os.getenv(env_var) or None
+    """Resolve the credential the prompt entry names, falling back to env_var only when the entry names none."""
+    reference: Final = _named_reference(litellm_params, param_names)
+    if reference is None:
+        return os.getenv(env_var) or None
+    return _resolve_secret_reference(reference) or None
+
+
+def _missing_credential_label(name: str, reference: object) -> str:
+    if reference is None:
+        return name
+    if isinstance(reference, str) and reference.startswith("os.environ/"):
+        return f"{name} ({reference} is unset or empty)"
+    return f"{name} (set but empty)"
 
 
 def _strict_url_encode(self, url: str) -> str:
@@ -51,17 +71,15 @@ def _encode_slashes_in_langfuse_prompt_names() -> None:
 
 def prompt_initializer(litellm_params: "PromptLiteLLMParams", prompt_spec: "PromptSpec") -> "CustomPromptManagement":
     """Build a Langfuse prompt manager for a `prompts:` entry, failing at boot when credentials are missing."""
-    public_key: Final = _resolve_credential(litellm_params, ("langfuse_public_key",), "LANGFUSE_PUBLIC_KEY")
-    secret_key: Final = _resolve_credential(
-        litellm_params, ("langfuse_secret_key", "langfuse_secret"), "LANGFUSE_SECRET_KEY"
-    )
-    host: Final = _resolve_credential(litellm_params, ("langfuse_host",), "LANGFUSE_HOST")
+    public_key: Final = _resolve_credential(litellm_params, _PUBLIC_KEY_PARAMS, "LANGFUSE_PUBLIC_KEY")
+    secret_key: Final = _resolve_credential(litellm_params, _SECRET_KEY_PARAMS, "LANGFUSE_SECRET_KEY")
+    host: Final = _resolve_credential(litellm_params, _HOST_PARAMS, "LANGFUSE_HOST")
     missing: Final = tuple(
-        name
-        for name, value in (
-            ("langfuse_public_key", public_key),
-            ("langfuse_secret_key", secret_key),
-            ("langfuse_host", host),
+        _missing_credential_label(name, _named_reference(litellm_params, param_names))
+        for name, param_names, value in (
+            ("langfuse_public_key", _PUBLIC_KEY_PARAMS, public_key),
+            ("langfuse_secret_key", _SECRET_KEY_PARAMS, secret_key),
+            ("langfuse_host", _HOST_PARAMS, host),
         )
         if not value
     )
@@ -69,7 +87,7 @@ def prompt_initializer(litellm_params: "PromptLiteLLMParams", prompt_spec: "Prom
         raise ValueError(
             f"Langfuse prompt integration for prompt '{prompt_spec.prompt_id}' is missing credentials: {', '.join(missing)}. "
             "Set them under the prompt's litellm_params or via LANGFUSE_PUBLIC_KEY, LANGFUSE_SECRET_KEY and "
-            "LANGFUSE_HOST."
+            "LANGFUSE_HOST. A credential named in litellm_params never falls back to those variables."
         )
 
     _encode_slashes_in_langfuse_prompt_names()

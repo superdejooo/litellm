@@ -109,8 +109,40 @@ def test_initializer_fails_at_boot_when_credentials_are_missing(client_init):
     with pytest.raises(ValueError) as exc_info:
         prompt_initializer(spec.litellm_params, spec)
 
-    assert "missing credentials: langfuse_secret_key, langfuse_host." in str(exc_info.value)
+    assert (
+        "missing credentials: langfuse_secret_key, langfuse_host (os.environ/UNSET_LANGFUSE_HOST is unset or empty)."
+        in str(exc_info.value)
+    )
     assert "events/description-create" in str(exc_info.value)
+    client_init.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("named_credential", "expected_missing"),
+    [
+        (
+            {"langfuse_public_key": "os.environ/LANGFUSE_PK_TEAM_B"},
+            "langfuse_public_key (os.environ/LANGFUSE_PK_TEAM_B is unset or empty)",
+        ),
+        (
+            {"langfuse_secret": "os.environ/LANGFUSE_SK_TEAM_B"},
+            "langfuse_secret_key (os.environ/LANGFUSE_SK_TEAM_B is unset or empty)",
+        ),
+        ({"langfuse_host": ""}, "langfuse_host (set but empty)"),
+    ],
+)
+def test_named_credential_that_does_not_resolve_never_falls_back_to_the_default_project(
+    client_init, monkeypatch, named_credential, expected_missing
+):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-default")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-default")
+    monkeypatch.setenv("LANGFUSE_HOST", "https://langfuse.default")
+    spec = _spec(**named_credential)
+
+    with pytest.raises(ValueError) as exc_info:
+        prompt_initializer(spec.litellm_params, spec)
+
+    assert f"missing credentials: {expected_missing}." in str(exc_info.value)
     client_init.assert_not_called()
 
 
