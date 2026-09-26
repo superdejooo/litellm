@@ -797,3 +797,29 @@ def test_text_tokens_without_nested_reasoning_clamps(
         )
         == expected_text_tokens
     )
+
+
+@pytest.mark.parametrize(
+    ("expires_at", "transcript", "expected_expires_at", "expected_transcript"),
+    [
+        (None, None, 0, ""),
+        (100, None, 100, ""),
+        (None, "hi", 0, "hi"),
+        (1776975012, "Hello world", 1776975012, "Hello world"),
+        (0, "", 0, ""),
+    ],
+)
+def test_chat_completion_audio_response_defaults_null_metadata(
+    expires_at, transcript, expected_expires_at, expected_transcript
+):
+    """OpenAI-compatible TTS providers return null expires_at/transcript, which the OpenAI audio schema requires."""
+    from litellm.types.utils import ChatCompletionAudioResponse
+
+    audio = ChatCompletionAudioResponse(
+        id="audio-123", data="UklGRi...", expires_at=expires_at, transcript=transcript
+    )
+
+    assert audio.id == "audio-123"
+    assert audio.data == "UklGRi..."
+    assert audio.expires_at == expected_expires_at
+    assert audio.transcript == expected_transcript

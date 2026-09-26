@@ -41,6 +41,7 @@ from pydantic import (
     SkipValidation,
     field_serializer,
     field_validator,
+    model_validator,
 )
 from typing_extensions import NotRequired, ReadOnly, Required, TypedDict
 
@@ -1272,6 +1273,20 @@ class ChatCompletionAudioResponse(ChatCompletionAudio):
         else:
             id = f"{uuid.uuid4()}"
         super().__init__(data=data, expires_at=expires_at, transcript=transcript, id=id, **params)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _default_null_audio_metadata(cls, data: object) -> object:
+        """OpenAI-compatible TTS providers send null expires_at / transcript, which the OpenAI schema requires."""
+        if not isinstance(data, Mapping):
+            return data
+        expires_at: Final = data.get("expires_at")
+        transcript: Final = data.get("transcript")
+        return {
+            **data,
+            "expires_at": 0 if expires_at is None else expires_at,
+            "transcript": "" if transcript is None else transcript,
+        }
 
     def __contains__(self, key) -> bool:
         # Define custom behavior for the 'in' operator

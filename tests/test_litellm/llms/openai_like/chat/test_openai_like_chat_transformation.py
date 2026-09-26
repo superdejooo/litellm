@@ -1,5 +1,9 @@
+from unittest.mock import MagicMock
+
+import httpx
 import pytest
 from litellm.llms.openai_like.chat.transformation import OpenAILikeChatConfig
+from litellm.types.utils import ModelResponse
 
 
 def test_sanitize_usage_obj_handles_null_tokens():
@@ -47,3 +51,56 @@ def test_sanitize_usage_obj_valid_usage():
 
     # Assert
     assert sanitized_json == original_json  # The object should be unchanged
+
+
+def test_transform_response_accepts_null_audio_metadata():
+    """OpenAI-compatible TTS providers send audio.expires_at / audio.transcript as null."""
+    response = httpx.Response(
+        200,
+        json={
+            "id": "chatcmpl-tts",
+            "created": 1776975000,
+            "model": "mimo-v2-tts",
+            "object": "chat.completion",
+            "choices": [
+                {
+                    "finish_reason": "stop",
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "audio": {
+                            "id": "audio-123",
+                            "data": "UklGRi...",
+                            "expires_at": None,
+                            "transcript": None,
+                        },
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
+        },
+    )
+
+    model_response = OpenAILikeChatConfig._transform_response(
+        model="mimo-v2-tts",
+        response=response,
+        model_response=ModelResponse(),
+        stream=False,
+        logging_obj=MagicMock(),
+        optional_params={},
+        api_key=None,
+        data={},
+        messages=[],
+        print_verbose=None,
+        encoding=None,
+        json_mode=None,
+        custom_llm_provider="xiaomi_mimo",
+        base_model=None,
+    )
+
+    audio = model_response.choices[0].message.audio
+    assert audio.id == "audio-123"
+    assert audio.data == "UklGRi..."
+    assert audio.expires_at == 0
+    assert audio.transcript == ""

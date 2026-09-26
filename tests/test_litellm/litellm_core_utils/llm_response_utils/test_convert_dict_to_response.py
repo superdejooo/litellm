@@ -195,3 +195,36 @@ async def test_convert_non_list_choices_raises_api_error(choices: object, type_n
     with pytest.raises(APIError, match=expected):
         async for _ in convert_to_streaming_response_async(response_object=resp):
             pass
+
+
+def test_convert_to_model_response_object_accepts_null_audio_metadata():
+    """OpenAI-compatible TTS providers send audio.expires_at / audio.transcript as null."""
+    resp: Final = {
+        "id": "chatcmpl-tts",
+        "created": 1776975000,
+        "model": "mimo-v2-tts",
+        "object": "chat.completion",
+        "choices": [
+            {
+                "finish_reason": "stop",
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "content": None,
+                    "audio": {"id": "audio-123", "data": "UklGRi...", "expires_at": None, "transcript": None},
+                },
+            }
+        ],
+    }
+
+    result: Final = convert_to_model_response_object(
+        response_object=resp,
+        model_response_object=ModelResponse(),
+        response_type="completion",
+    )
+
+    audio: Final = result.choices[0].message.audio
+    assert audio.id == "audio-123"
+    assert audio.data == "UklGRi..."
+    assert audio.expires_at == 0
+    assert audio.transcript == ""
