@@ -206,6 +206,108 @@ class TestChatGPTResponsesAPITransformation:
             "function": {"name": "hello"},
         }
 
+    @staticmethod
+    def _transform_request(input, **optional_params):
+        with patch(
+            "litellm.llms.chatgpt.responses.transformation.get_chatgpt_default_instructions",
+            return_value="BASE",
+        ):
+            return ChatGPTResponsesAPIConfig().transform_responses_api_request(
+                model="chatgpt/gpt-5.4",
+                input=input,
+                response_api_optional_request_params=optional_params,
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
+
+    def test_chatgpt_wraps_scalar_input_in_user_message(self):
+        request = self._transform_request("test from litellm")
+
+        assert request["input"] == [{"role": "user", "content": "test from litellm"}]
+        assert request["instructions"] == "BASE"
+
+    def test_chatgpt_keeps_user_input_and_instructions_without_system_items(self):
+        request = self._transform_request(
+            [{"role": "user", "content": "hi"}], instructions="Be concise."
+        )
+
+        assert request["input"] == [{"role": "user", "content": "hi"}]
+        assert request["instructions"] == "BASE\n\nBe concise."
+
+    def test_chatgpt_moves_system_input_item_to_instructions(self):
+        request = self._transform_request(
+            [
+                {"role": "system", "content": "Answer in Bosnian."},
+                {"role": "user", "content": "Objasni routing."},
+            ]
+        )
+
+        assert request["input"] == [{"role": "user", "content": "Objasni routing."}]
+        assert request["instructions"] == "BASE\n\nAnswer in Bosnian."
+
+    def test_chatgpt_system_input_items_precede_existing_instructions_in_order(self):
+        request = self._transform_request(
+            [
+                {"role": "system", "content": "Answer in Bosnian."},
+                {"role": "user", "content": "Objasni routing."},
+                {"role": "assistant", "content": "Routing je..."},
+                {
+                    "role": "system",
+                    "content": [{"type": "input_text", "text": "Use bullet points."}],
+                },
+                {"role": "developer", "content": "Stay on topic."},
+                {"role": "user", "content": "Detaljnije."},
+            ],
+            instructions="Be concise.",
+        )
+
+        assert request["input"] == [
+            {"role": "user", "content": "Objasni routing."},
+            {"role": "assistant", "content": "Routing je..."},
+            {"role": "developer", "content": "Stay on topic."},
+            {"role": "user", "content": "Detaljnije."},
+        ]
+        assert request["instructions"] == (
+            "BASE\n\nAnswer in Bosnian.\n\nUse bullet points.\n\nBe concise."
+        )
+
+    def test_chatgpt_drops_empty_system_input_item(self):
+        request = self._transform_request(
+            [
+                {"role": "system", "content": ""},
+                {"role": "user", "content": "hi"},
+            ]
+        )
+
+        assert request["input"] == [{"role": "user", "content": "hi"}]
+        assert request["instructions"] == "BASE"
+
+    def test_chatgpt_system_content_parts_skip_non_text_values(self):
+        request = self._transform_request(
+            [
+                {
+                    "role": "system",
+                    "content": [
+                        {"type": "input_text", "text": 123},
+                        {"type": "input_image", "image_url": "https://example.com/a.png"},
+                        {"type": "text", "text": "Valid text."},
+                    ],
+                },
+                {"role": "user", "content": "hi"},
+            ]
+        )
+
+        assert request["input"] == [{"role": "user", "content": "hi"}]
+        assert request["instructions"] == "BASE\n\nValid text."
+
+    @pytest.mark.parametrize(
+        "input",
+        ["hi", [{"role": "user", "content": "hi"}]],
+    )
+    def test_chatgpt_rejects_non_string_instructions(self, input):
+        with pytest.raises(TypeError, match="instructions must be a string"):
+            self._transform_request(input, instructions=[])
+
     @pytest.mark.parametrize(
         ("model_name", "response_model"),
         [

@@ -1,3 +1,4 @@
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final
 
 from litellm.exceptions import AuthenticationError
@@ -30,6 +31,41 @@ from ..common_utils import (
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging as LiteLLMLoggingObj
+
+
+def _is_system_input_item(item: object) -> bool:
+    return isinstance(item, Mapping) and item.get("role") == "system"
+
+
+def _system_input_item_texts(item: object) -> tuple[str, ...]:
+    content: Final = item.get("content") if isinstance(item, Mapping) else None
+    if isinstance(content, str):
+        return (content,) if content else ()
+    if not isinstance(content, list):
+        return ()
+    part_texts: Final = (
+        part.get("text") for part in content if isinstance(part, Mapping) and part.get("type") in ("text", "input_text")
+    )
+    return tuple(text for text in part_texts if isinstance(text, str) and text)
+
+
+def _chatgpt_input_and_instructions(input_value: object, instructions: object) -> tuple[object, str | None]:
+    """Wrap scalar input and lift system input items into instructions, both rejected by the ChatGPT backend."""
+    if instructions is not None and not isinstance(instructions, str):
+        raise TypeError("ChatGPT Responses instructions must be a string")
+    if isinstance(input_value, str):
+        return [{"role": "user", "content": input_value}], instructions
+    if not isinstance(input_value, list):
+        return input_value, instructions
+
+    system_texts: Final = tuple(
+        text for item in input_value if _is_system_input_item(item) for text in _system_input_item_texts(item)
+    )
+    non_system_items: Final = [item for item in input_value if not _is_system_input_item(item)]
+    if not system_texts:
+        return non_system_items, instructions
+    instruction_parts: Final = (*system_texts, instructions) if instructions else system_texts
+    return non_system_items, "\n\n".join(instruction_parts)
 
 
 class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
@@ -76,6 +112,11 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             litellm_params,
             headers,
         )
+        chatgpt_input, chatgpt_instructions = _chatgpt_input_and_instructions(
+            request.get("input"), request.get("instructions")
+        )
+        request["input"] = chatgpt_input
+        request["instructions"] = chatgpt_instructions
         base_instructions: Final = get_chatgpt_default_instructions()
         existing_instructions: Final = request.get("instructions")
         if existing_instructions:
