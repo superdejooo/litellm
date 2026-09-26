@@ -994,6 +994,42 @@ class TestLangfuseOtelResponsesAPI:
             assert output_data[0]["arguments"]["location"] == "San Francisco"
             assert output_data[0]["arguments"]["unit"] == "celsius"
 
+    @pytest.mark.parametrize("wrap_in_responses_api_response", [False, True])
+    def test_responses_api_dict_output_items_reach_observation_output(self, wrap_in_responses_api_response):
+        output = [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "answer"}]},
+            {"type": "message", "role": "assistant", "content": []},
+            {
+                "type": "function_call",
+                "id": "fc-1",
+                "name": "get_weather",
+                "call_id": "call-1",
+                "arguments": '{"city": "Zagreb"}',
+            },
+        ]
+        response_obj = (
+            ResponsesAPIResponse(id="resp-dict", created_at=1625247700, output=output)
+            if wrap_in_responses_api_response
+            else {"output": [*output, ["list-shaped-item"]]}
+        )
+        span = _RecordingSpan()
+
+        LangfuseOtelLogger._set_langfuse_specific_attributes(span, {"call_type": "responses"}, response_obj)
+
+        assert json.loads(span.attributes["langfuse.observation.output"]) == [
+            {"role": "reasoning_summary", "content": "thinking"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "assistant", "content": ""},
+            {
+                "id": "fc-1",
+                "name": "get_weather",
+                "call_id": "call-1",
+                "type": "function_call",
+                "arguments": {"city": "Zagreb"},
+            },
+        ]
+
     def test_responses_api_function_call_with_redacted_arguments(self):
         """Sentinel arguments (invalid JSON) must not kill the whole observation output."""
         from openai.types.responses import ResponseFunctionToolCall

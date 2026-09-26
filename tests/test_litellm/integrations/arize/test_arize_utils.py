@@ -1513,3 +1513,122 @@ def test_arize_mcp_emitter_is_inert_without_a_standard_logging_object():
 
     written = {c.args[0]: c.args[1] for c in span.set_attribute.call_args_list}
     assert SpanAttributes.TOOL_NAME not in written
+
+
+class _RecordingSpan:
+    def __init__(self):
+        self.attributes = {}
+        self.exceptions = []
+
+    def set_attribute(self, key, value):
+        self.attributes[key] = value
+
+    def record_exception(self, exception):
+        self.exceptions.append(exception)
+
+
+def _chat_kwargs(messages):
+    return {
+        "model": "gpt-4o-mini",
+        "messages": messages,
+        "standard_logging_object": {"model_parameters": {"temperature": 0.2}, "metadata": {}, "call_type": "completion"},
+        "optional_params": {"temperature": 0.2},
+        "litellm_params": {"custom_llm_provider": "openai"},
+    }
+
+
+def test_arize_list_shaped_message_keeps_model_params_and_response_attributes():
+    span = _RecordingSpan()
+    response_obj = {"choices": [{"message": {"role": "assistant", "content": "answer"}}]}
+
+    ArizeLogger.set_arize_attributes(
+        span, _chat_kwargs([{"role": "user", "content": "question"}, ["list-shaped"]]), response_obj
+    )
+
+    assert span.exceptions == []
+    assert span.attributes["llm.input_messages.0.message.content"] == "question"
+    assert not any(key.startswith("llm.input_messages.1.") for key in span.attributes)
+    assert json.loads(span.attributes[SpanAttributes.LLM_INVOCATION_PARAMETERS]) == {"temperature": 0.2}
+    assert span.attributes["llm.output_messages.0.message.content"] == "answer"
+
+
+def test_arize_input_value_is_the_last_message_only():
+    from litellm.integrations.arize._utils import ArizeOTELAttributes
+
+    list_tail_span = _RecordingSpan()
+    ArizeOTELAttributes.set_messages(
+        list_tail_span, {"messages": [{"role": "user", "content": "earlier"}, ["list-shaped-tail"]]}
+    )
+    list_head_span = _RecordingSpan()
+    ArizeOTELAttributes.set_messages(
+        list_head_span, {"messages": [["list-shaped-head"], {"role": "user", "content": "tail"}]}
+    )
+
+    assert list_tail_span.attributes[SpanAttributes.INPUT_VALUE] == ""
+    assert list_head_span.attributes[SpanAttributes.INPUT_VALUE] == "tail"
+    assert list_head_span.attributes["llm.input_messages.1.message.content"] == "tail"
+
+
+def test_arize_skips_non_mapping_choices_and_messages():
+    from litellm.integrations.arize._utils import _set_response_attributes
+
+    span = _RecordingSpan()
+    response_obj = {
+        "choices": [
+            ["list-shaped-choice"],
+            {"message": ["list-shaped-message"]},
+            {"message": {"role": "assistant", "content": "kept"}},
+        ]
+    }
+
+    _set_response_attributes(span, response_obj)
+
+    assert span.attributes["llm.output_messages.2.message.content"] == "kept"
+    assert not any(key.startswith("llm.output_messages.0.") for key in span.attributes)
+    assert span.attributes["llm.output_messages.1.message.content"] == ""
+
+
+def test_arize_media_outputs_take_output_value_from_the_first_mapping_item():
+    from litellm.integrations._types.open_inference import (
+        AudioAttributes,
+        EmbeddingAttributes,
+        ImageAttributes,
+    )
+    from litellm.integrations.arize._utils import (
+        _set_audio_outputs,
+        _set_embedding_outputs,
+        _set_image_outputs,
+    )
+
+    image_span = _RecordingSpan()
+    _set_image_outputs(image_span, {"data": [["bad"], {"url": "https://img"}]}, ImageAttributes, SpanAttributes)
+    audio_span = _RecordingSpan()
+    _set_audio_outputs(audio_span, {"audio": [["bad"], {"url": "https://audio"}]}, AudioAttributes, SpanAttributes)
+    embedding_span = _RecordingSpan()
+    _set_embedding_outputs(
+        embedding_span, {"data": [["bad"], {"embedding": [0.1, 0.2]}]}, EmbeddingAttributes, SpanAttributes
+    )
+
+    assert image_span.attributes[SpanAttributes.OUTPUT_VALUE] == "https://img"
+    assert audio_span.attributes[SpanAttributes.OUTPUT_VALUE] == "https://audio"
+    assert embedding_span.attributes[SpanAttributes.OUTPUT_VALUE] == "[0.1, 0.2]"
+
+
+def test_arize_structured_outputs_accept_dict_shaped_responses_items():
+    from litellm.integrations.arize._utils import _set_structured_outputs
+
+    span = _RecordingSpan()
+    response_obj = {
+        "output": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "thinking"}]},
+            {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "answer"}]},
+            ["list-shaped-item"],
+        ]
+    }
+
+    _set_structured_outputs(span, response_obj, MessageAttributes, SpanAttributes)
+
+    assert span.attributes[f"llm.output_messages.0.{MessageAttributes.MESSAGE_REASONING_SUMMARY}"] == "thinking"
+    assert span.attributes[SpanAttributes.OUTPUT_VALUE] == "answer"
+    assert span.attributes["llm.output_messages.1.message.role"] == "assistant"
+    assert not any(key.startswith("llm.output_messages.2.") for key in span.attributes)

@@ -30,6 +30,10 @@ from litellm.integrations._types.open_inference import (
 )
 
 
+def _has_get(value: object) -> bool:
+    return callable(getattr(value, "get", None))
+
+
 class ArizeOTELAttributes(BaseLLMObsOTELAttributes):
     @staticmethod
     @override
@@ -43,11 +47,13 @@ class ArizeOTELAttributes(BaseLLMObsOTELAttributes):
             safe_set_attribute(
                 span,
                 SpanAttributes.INPUT_VALUE,
-                last_message.get("content", ""),
+                last_message.get("content", "") if _has_get(last_message) else "",
             )
 
             # LLM_INPUT_MESSAGES shows up under `input_messages` tab on the span page.
             for idx, msg in enumerate(messages):
+                if not _has_get(msg):
+                    continue
                 prefix = f"{SpanAttributes.LLM_INPUT_MESSAGES}.{idx}"
                 # Set the role per message.
                 safe_set_attribute(span, f"{prefix}.{MessageAttributes.MESSAGE_ROLE}", msg.get("role"))
@@ -94,7 +100,10 @@ def _set_response_attributes(span: "Span", response_obj):
 
 def _set_choice_outputs(span: "Span", response_obj, msg_attrs, span_attrs):
     for idx, choice in enumerate(response_obj.get("choices", [])):
-        response_message = choice.get("message", {})
+        if not _has_get(choice):
+            continue
+        message = choice.get("message", {})
+        response_message = message if _has_get(message) else {}
         content = response_message.get("content", "")
 
         # Tool-only assistant responses have empty content; serialize the
@@ -131,7 +140,7 @@ def _set_choice_outputs(span: "Span", response_obj, msg_attrs, span_attrs):
 
 
 def _set_image_outputs(span: "Span", response_obj, image_attrs, span_attrs):
-    images: Final = response_obj.get("data", [])
+    images: Final = [image for image in response_obj.get("data", []) if _has_get(image)]
     for i, image in enumerate(images):
         img_url = image.get("url")
         if img_url is None and image.get("b64_json"):
@@ -147,7 +156,7 @@ def _set_image_outputs(span: "Span", response_obj, image_attrs, span_attrs):
 
 
 def _set_audio_outputs(span: "Span", response_obj, audio_attrs, span_attrs):
-    audio: Final = response_obj.get("audio", [])
+    audio: Final = [audio_item for audio_item in response_obj.get("audio", []) if _has_get(audio_item)]
     for i, audio_item in enumerate(audio):
         audio_url = audio_item.get("url")
         if audio_url is None and audio_item.get("b64_json"):
@@ -168,7 +177,7 @@ def _set_audio_outputs(span: "Span", response_obj, audio_attrs, span_attrs):
 
 
 def _set_embedding_outputs(span: "Span", response_obj, embedding_attrs, span_attrs):
-    embeddings: Final = response_obj.get("data", [])
+    embeddings: Final = [item for item in response_obj.get("data", []) if _has_get(item)]
     for i, embedding_item in enumerate(embeddings):
         embedding_vector = embedding_item.get("embedding")
         if embedding_vector:
@@ -198,25 +207,20 @@ def _set_structured_outputs(span: "Span", response_obj, msg_attrs, span_attrs):
     output_items: Final = response_obj.get("output", [])
     for i, item in enumerate(output_items):
         prefix = f"{span_attrs.LLM_OUTPUT_MESSAGES}.{i}"
-        if not hasattr(item, "type"):
-            continue
-
-        item_type = item.type
-        if item_type == "reasoning" and hasattr(item, "summary"):
-            for summary in item.summary:
-                if hasattr(summary, "text"):
+        item_type = _safe_get(item, "type")
+        if item_type == "reasoning":
+            for summary in _safe_get(item, "summary") or []:
+                summary_text = _safe_get(summary, "text")
+                if summary_text is not None:
                     safe_set_attribute(
                         span,
                         f"{prefix}.{msg_attrs.MESSAGE_REASONING_SUMMARY}",
-                        summary.text,
+                        summary_text,
                     )
-        elif item_type == "message" and hasattr(item, "content"):
-            message_content = ""
-            content_list = item.content
-            if content_list and len(content_list) > 0:
-                first_content = content_list[0]
-                message_content = getattr(first_content, "text", "")
-            message_role = getattr(item, "role", "assistant")
+        elif item_type == "message":
+            content_list = _safe_get(item, "content") or []
+            message_content = _safe_get(content_list[0], "text", "") if content_list else ""
+            message_role = _safe_get(item, "role", "assistant")
             safe_set_attribute(span, span_attrs.OUTPUT_VALUE, message_content)
             safe_set_attribute(span, f"{prefix}.{msg_attrs.MESSAGE_CONTENT}", message_content)
             safe_set_attribute(span, f"{prefix}.{msg_attrs.MESSAGE_ROLE}", message_role)

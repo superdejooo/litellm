@@ -194,39 +194,38 @@ class LangfuseOtelLogger(OpenTelemetry):
         if output:
             output_items_data: Final[list[dict]] = []
             for item in output:
-                if hasattr(item, "type"):
-                    item_type = item.type
-                    if item_type == "reasoning" and hasattr(item, "summary"):
-                        for summary in item.summary:
-                            if hasattr(summary, "text"):
-                                output_items_data.append(
-                                    {
-                                        "role": "reasoning_summary",
-                                        "content": summary.text,
-                                    }
-                                )
-                    elif item_type == "message":
-                        output_items_data.append(
-                            {
-                                "role": getattr(item, "role", "assistant"),
-                                "content": getattr(getattr(item, "content", [{}])[0], "text", ""),
-                            }
-                        )
-                    elif item_type == "function_call":
-                        arguments_str = getattr(item, "arguments", "{}")
-                        arguments_obj = (
-                            safe_json_loads(arguments_str, default={})
-                            if isinstance(arguments_str, str)
-                            else arguments_str
-                        )
-                        langfuse_tool_call = {
-                            "id": getattr(item, "id", ""),
-                            "name": getattr(item, "name", ""),
-                            "call_id": getattr(item, "call_id", ""),
-                            "type": "function_call",
-                            "arguments": arguments_obj,
+                item_type = _utils._safe_get(item, "type")
+                if item_type == "reasoning":
+                    for summary in _utils._safe_get(item, "summary") or []:
+                        summary_text = _utils._safe_get(summary, "text")
+                        if summary_text is not None:
+                            output_items_data.append(
+                                {
+                                    "role": "reasoning_summary",
+                                    "content": summary_text,
+                                }
+                            )
+                elif item_type == "message":
+                    content_list = _utils._safe_get(item, "content") or []
+                    output_items_data.append(
+                        {
+                            "role": _utils._safe_get(item, "role", "assistant"),
+                            "content": _utils._safe_get(content_list[0], "text", "") if content_list else "",
                         }
-                        output_items_data.append(langfuse_tool_call)
+                    )
+                elif item_type == "function_call":
+                    arguments_str = _utils._safe_get(item, "arguments", "{}")
+                    arguments_obj = (
+                        safe_json_loads(arguments_str, default={}) if isinstance(arguments_str, str) else arguments_str
+                    )
+                    langfuse_tool_call = {
+                        "id": _utils._safe_get(item, "id", ""),
+                        "name": _utils._safe_get(item, "name", ""),
+                        "call_id": _utils._safe_get(item, "call_id", ""),
+                        "type": "function_call",
+                        "arguments": arguments_obj,
+                    }
+                    output_items_data.append(langfuse_tool_call)
             if output_items_data:
                 safe_set_attribute(
                     span,
