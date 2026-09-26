@@ -233,49 +233,38 @@ class TestGitHubCopilotAuthenticator:
             )
             mock_print.assert_called_once()
 
-    def test_login_raises_when_interactive_oauth_disabled(
+    def test_get_api_key_surfaces_the_headless_gate_message_without_retrying(
         self, authenticator, monkeypatch
     ):
-        """Test that the device flow is not started when interactive OAuth is disabled."""
+        """Test that a missing token file fails once, with the gate's own message, and no device-flow call."""
         monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", "true")
 
         with (
-            patch(
-                "litellm.llms.github_copilot.authenticator._get_httpx_client"
-            ) as mock_client,
-            patch("builtins.print") as mock_print,
-        ):
-            with pytest.raises(GetAccessTokenError) as exc_info:
-                authenticator._login()
-
-        assert exc_info.value.status_code == 401
-        assert authenticator.access_token_file in exc_info.value.message
-        assert "LITELLM_DISABLE_INTERACTIVE_OAUTH" in exc_info.value.message
-        mock_client.assert_not_called()
-        mock_print.assert_not_called()
-
-    def test_get_access_token_fails_fast_when_interactive_oauth_disabled(
-        self, authenticator, monkeypatch
-    ):
-        """Test that a missing token file fails without any device-flow HTTP call or poll sleep."""
-        monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", "true")
-
-        with (
-            patch("builtins.open", side_effect=IOError),
+            patch("builtins.open", side_effect=FileNotFoundError),
             patch(
                 "litellm.llms.github_copilot.authenticator._get_httpx_client"
             ) as mock_client,
             patch("litellm.llms.github_copilot.authenticator.time.sleep") as mock_sleep,
+            patch("litellm.llms.github_copilot.authenticator.verbose_logger") as mock_logger,
+            patch("builtins.print") as mock_print,
         ):
             with pytest.raises(GetAccessTokenError) as exc_info:
-                authenticator.get_access_token()
+                authenticator.get_api_key()
 
         assert exc_info.value.status_code == 401
+        assert authenticator.access_token_file in exc_info.value.message
+        assert "interactive device-code login is disabled by LITELLM_DISABLE_INTERACTIVE_OAUTH" in (
+            exc_info.value.message
+        )
+        assert not any(
+            "Failed attempt" in call.args[0] for call in mock_logger.warning.call_args_list
+        )
         mock_client.assert_not_called()
         mock_sleep.assert_not_called()
+        mock_print.assert_not_called()
 
     @pytest.mark.parametrize("flag", [None, "false", ""])
-    def test_login_runs_device_flow_when_interactive_oauth_enabled(
+    def test_get_access_token_runs_device_flow_when_interactive_oauth_enabled(
         self, authenticator, monkeypatch, flag
     ):
         """Test that the device flow is unchanged when the flag is unset or false."""
@@ -285,6 +274,7 @@ class TestGitHubCopilotAuthenticator:
             monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", flag)
 
         with (
+            patch("builtins.open", side_effect=[FileNotFoundError(), mock_open()()]),
             patch.object(
                 authenticator,
                 "_get_device_code",
@@ -299,7 +289,7 @@ class TestGitHubCopilotAuthenticator:
             ),
             patch("builtins.print"),
         ):
-            assert authenticator._login() == "mock-access-token"
+            assert authenticator.get_access_token() == "mock-access-token"
 
         mock_get_device_code.assert_called_once()
 

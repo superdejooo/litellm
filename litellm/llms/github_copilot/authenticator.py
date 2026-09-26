@@ -58,6 +58,7 @@ class Authenticator:
         except OSError:
             verbose_logger.warning("No existing access token found or error reading file")
 
+        self._raise_if_interactive_login_disabled()
         for attempt in range(3):
             verbose_logger.debug("Access token acquisition attempt %s/3", attempt + 1)
             try:
@@ -330,6 +331,17 @@ class Authenticator:
             status_code=400,
         )
 
+    def _raise_if_interactive_login_disabled(self) -> None:
+        if str_to_bool(os.getenv("LITELLM_DISABLE_INTERACTIVE_OAUTH")) is True:
+            raise GetAccessTokenError(
+                message=(
+                    f"GitHub Copilot access token not found at {self.access_token_file}, "
+                    "and interactive device-code login is disabled by LITELLM_DISABLE_INTERACTIVE_OAUTH. "
+                    "Provision the access token file."
+                ),
+                status_code=401,
+            )
+
     def _login(self) -> str:
         """
         Login to GitHub Copilot using device code flow.
@@ -341,16 +353,6 @@ class Authenticator:
             GetDeviceCodeError: If unable to get a device code.
             GetAccessTokenError: If unable to get an access token.
         """
-        if str_to_bool(os.getenv("LITELLM_DISABLE_INTERACTIVE_OAUTH")) is True:
-            raise GetAccessTokenError(
-                message=(
-                    f"GitHub Copilot access token not found at {self.access_token_file}, "
-                    "and interactive device-code login is disabled by LITELLM_DISABLE_INTERACTIVE_OAUTH. "
-                    "Provision the access token file."
-                ),
-                status_code=401,
-            )
-
         device_code_info: Final = self._get_device_code()
 
         device_code: Final = device_code_info["device_code"]
