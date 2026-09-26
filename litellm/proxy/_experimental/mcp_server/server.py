@@ -866,6 +866,10 @@ if MCP_AVAILABLE:
                 raw_headers=raw_headers,
                 log_list_tools_to_spendlogs=True,
                 list_tools_log_source="mcp_protocol",
+                client_ip=_client_ip,
+                request_tags=LiteLLMProxyRequestSetup.add_request_tag_to_metadata(
+                    llm_router=None, headers=raw_headers or {}, data={}
+                ),
             )
             verbose_logger.info("MCP list_tools - Successfully returned %s tools", len(listing.tools))
             if not listing.outcomes:
@@ -2169,6 +2173,7 @@ if MCP_AVAILABLE:
                 spend_logs_metadata["source"] = list_tools_log_source
             if isinstance(mcp_servers, list):
                 spend_logs_metadata["requested_mcp_servers"] = mcp_servers
+            logging_safe_headers: Final = logging_safe_mcp_headers(raw_headers)
 
             list_tools_request_data = {
                 "model": "MCP: list_tools",
@@ -2177,8 +2182,14 @@ if MCP_AVAILABLE:
                 "litellm_trace_id": effective_litellm_trace_id,
                 "metadata": {
                     "spend_logs_metadata": spend_logs_metadata,
-                    "headers": logging_safe_mcp_headers(raw_headers),
+                    "headers": logging_safe_headers,
                     **({"tags": request_tags} if request_tags else {}),
+                    **({"requester_ip_address": client_ip} if client_ip else {}),
+                },
+                "proxy_server_request": {
+                    "url": "/mcp/tools/list",
+                    "method": "POST",
+                    "headers": logging_safe_headers,
                 },
                 # Provide a small input payload for standard logging
                 "input": [
@@ -2635,6 +2646,7 @@ if MCP_AVAILABLE:
         list_tools_log_source: str | None = None,
         client_ip: str | None = None,
         mcp_proxy_mode: bool = False,
+        request_tags: list[str] | None = None,
     ) -> AggregateToolListing:
         """
         List all available MCP tools.
@@ -2663,6 +2675,7 @@ if MCP_AVAILABLE:
                 raw_headers=raw_headers,
                 log_list_tools_to_spendlogs=log_list_tools_to_spendlogs,
                 list_tools_log_source=list_tools_log_source,
+                request_tags=request_tags,
                 client_ip=client_ip,
                 mcp_proxy_mode=mcp_proxy_mode,
             )

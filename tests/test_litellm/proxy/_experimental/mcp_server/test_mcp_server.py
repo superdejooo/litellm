@@ -1,5 +1,6 @@
 import asyncio
 import contextvars
+import json
 import os
 from datetime import datetime, timedelta
 from types import SimpleNamespace
@@ -4986,6 +4987,105 @@ async def test_get_tools_from_mcp_servers_returns_tools_when_success_logging_fai
 
     assert listing.tools == [tool_1]
     dummy_logging_obj.async_success_handler.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_list_tools_spend_row_carries_caller_context_without_credentials(monkeypatch):
+    """An MCP-protocol tools/list spend row must carry the caller's x-litellm-tags, user-agent tag,
+    client IP and a proxy_server_request, like a tools/call row, and no credential header value"""
+    try:
+        import litellm
+        from litellm.proxy._experimental.mcp_server import server as mcp_server_module
+        from litellm.proxy._experimental.mcp_server.server import handle_list_tools
+        from litellm.proxy._types import UserAPIKeyAuth
+        from litellm.proxy.spend_tracking.spend_tracking_utils import get_logging_payload
+        from mcp.types import Tool as MCPTool
+    except ImportError:
+        pytest.skip("MCP server not available")
+
+    monkeypatch.setattr(litellm, "success_callback", [])
+    monkeypatch.setattr(litellm, "_async_success_callback", [])
+    monkeypatch.setattr(litellm, "callbacks", [])
+    monkeypatch.setattr(litellm, "disable_add_user_agent_to_request_tags", False)
+
+    user_auth = UserAPIKeyAuth(api_key="test-key", user_id="test-user")
+    raw_headers = {
+        "x-litellm-tags": "team-a, project-b",
+        "user-agent": "claude-code/1.0",
+        "authorization": "Bearer upstream-secret-token",
+        "x-litellm-api-key": "sk-caller-secret",
+        "x-mcp-server_a-authorization": "Bearer per-server-secret",
+    }
+    client_ip = "203.0.113.7"
+
+    server_a = MagicMock(name="server_a_obj")
+    server_a.name = "server_a"
+    server_a.alias = "server_a"
+    server_a.server_name = "server_a"
+    server_a.server_id = "a"
+    server_a.auth_type = None
+    server_a.extra_headers = None
+    tool_1 = MCPTool(name="server_a-tool_1", description="test tool", inputSchema={"type": "object"})
+
+    real_function_setup = mcp_server_module.function_setup
+    captured = {}
+
+    def _capture_function_setup(*args, **kwargs):
+        logging_obj, returned_kwargs = real_function_setup(*args, **kwargs)
+        captured["logging_obj"] = logging_obj
+        return logging_obj, returned_kwargs
+
+    allowed_servers = AsyncMock(return_value=[server_a])
+    with (
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.get_or_extract_auth_context",
+            new=AsyncMock(return_value=(user_auth, None, None, None, None, raw_headers, client_ip)),
+        ),
+        patch("litellm.proxy._experimental.mcp_server.server._get_allowed_mcp_servers", new=allowed_servers),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server._prepare_mcp_server_headers",
+            return_value=(None, None),
+        ),
+        patch("litellm.proxy._experimental.mcp_server.server.global_mcp_server_manager") as mock_manager,
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.filter_tools_by_allowed_tools",
+            side_effect=lambda tools, _server: tools,
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.filter_tools_by_key_team_permissions",
+            new=AsyncMock(side_effect=lambda tools, **_: tools),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.function_setup",
+            side_effect=_capture_function_setup,
+        ),
+    ):
+        mock_manager._get_tools_from_server = AsyncMock(return_value=[tool_1])
+        await handle_list_tools()
+
+    assert allowed_servers.await_args.kwargs["client_ip"] == client_ip
+
+    model_call_details = captured["logging_obj"].model_call_details
+    payload = model_call_details["standard_logging_object"]
+    assert payload["request_tags"] == ["team-a", "project-b", "User-Agent: claude-code", "User-Agent: claude-code/1.0"]
+    assert payload["metadata"]["requester_ip_address"] == client_ip
+    proxy_server_request = model_call_details["litellm_params"]["proxy_server_request"]
+    assert proxy_server_request["url"] == "/mcp/tools/list"
+    assert proxy_server_request["method"] == "POST"
+    assert proxy_server_request["headers"]["user-agent"] == "claude-code/1.0"
+
+    spend_row = get_logging_payload(
+        kwargs=model_call_details,
+        response_obj=None,
+        start_time=datetime.now(),
+        end_time=datetime.now(),
+    )
+    assert json.loads(spend_row["request_tags"]) == payload["request_tags"]
+    assert spend_row["requester_ip_address"] == client_ip
+
+    serialized = json.dumps([payload, spend_row, model_call_details["litellm_params"]], default=str)
+    for secret in ("upstream-secret-token", "sk-caller-secret", "per-server-secret"):
+        assert secret not in serialized
 
 
 def test_tool_name_matches_case_insensitive():
