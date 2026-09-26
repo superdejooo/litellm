@@ -2500,6 +2500,7 @@ class LiteLLMCompletionResponsesConfig:
                                 if text
                             ],
                             encrypted_content=encrypted_content,
+                            summary=[],
                         )
                     ]
         return []

@@ -4411,6 +4411,17 @@ class TestBridgedOutputItemIdPrefixes:
         assert len(items) == 1
         assert items[0].id.startswith("rs_")
 
+    def test_reasoning_item_serializes_empty_summary_array(self):
+        """The Responses schema requires reasoning.summary to be an array; strict clients reject a missing field."""
+        message = Message(role="assistant", content="apple", reasoning_content="thinking about fruit")
+        response = self._transform(
+            _bridged_chat_completion_response(choices=[Choices(index=0, finish_reason="stop", message=message)])
+        )
+
+        reasoning_items = [item for item in response.model_dump()["output"] if item["type"] == "reasoning"]
+        assert len(reasoning_items) == 1
+        assert reasoning_items[0]["summary"] == []
+
     def test_reasoning_item_id_is_not_a_salted_hash(self):
         """Python's hash() is salted per process, so the old rs_{hash(...)} ID for the
         same reasoning text differed between workers and across restarts."""
