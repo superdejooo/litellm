@@ -257,6 +257,7 @@ async def settle() -> None:
 async def call_sticky(aff: BackendSessionAffinity, factory: Factory, key: str = "key-1") -> CallToolResult:
     return await aff.call_with_key(
         StickyCall(
+            server_name="playwright",
             key=key,
             extra_headers={"X-Backend": "1"},
             params=CallToolRequestParams(name="browser_snapshot", arguments={}),
@@ -851,6 +852,19 @@ class TestStickyDispatchGate:
         assert stored_sid(redis) == "live-1"
 
     @pytest.mark.asyncio
+    async def test_a_failed_tool_call_logs_the_server_and_http_status(self, log_messages: list[str]) -> None:
+        """The caller gets the error text; the operator's log must identify the server and the status too."""
+        factory: Final = Factory([FakeClient(transport_error=http_status_error(503))])
+        result: Final = await call_gated(
+            make_affinity(FakeRedis()), factory, server(name="Playwright"), auth(token="t")
+        )
+        failures: Final = [m for m in log_messages if "tool call to" in m]
+        assert result.isError is True
+        assert len(failures) == 1, failures
+        assert "Playwright" in failures[0]
+        assert "503" in failures[0]
+
+    @pytest.mark.asyncio
     async def test_a_failed_resume_does_not_extend_the_session_ref(self) -> None:
         """A session that keeps failing with an error not classified as dead must age out, not be kept alive
         by every failed call."""
@@ -1357,6 +1371,7 @@ async def call_real(aff: BackendSessionAffinity, backend: StatefulBackend, url: 
     return await asyncio.wait_for(
         aff.call_with_key(
             StickyCall(
+                server_name="playwright",
                 key="key-1",
                 extra_headers=None,
                 params=CallToolRequestParams(name="navigate", arguments={"url": url} if url else {}),

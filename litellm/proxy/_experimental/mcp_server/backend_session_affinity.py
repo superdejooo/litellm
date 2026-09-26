@@ -110,6 +110,7 @@ class _Attempt:
 
 @dataclass(frozen=True, slots=True)
 class StickyCall:
+    server_name: str
     key: str
     extra_headers: Mapping[str, str] | None
     params: CallToolRequestParams
@@ -180,11 +181,17 @@ def sticky_error_result(marker: str, detail: str) -> CallToolResult:
     return CallToolResult(content=[TextContent(type="text", text=f"{marker}: {detail}")], isError=True)
 
 
-def _tool_result(attempt: _Attempt) -> CallToolResult:
+def _tool_result(attempt: _Attempt, call: StickyCall) -> CallToolResult:
     if isinstance(attempt.outcome, CallToolResult):
         return attempt.outcome
+    status: Final = getattr(getattr(attempt.outcome, "response", None), "status_code", None)
     verbose_logger.warning(
-        "mcp sticky: tool call to %s failed (%s)", attempt.client.server_url, type(attempt.outcome).__name__
+        "mcp sticky: tool call to server %s at %s failed (%s, HTTP status %s): %s",
+        call.server_name,
+        attempt.client.server_url,
+        type(attempt.outcome).__name__,
+        status if status is not None else "n/a",
+        attempt.outcome,
     )
     return MCPClient.error_tool_result(attempt.outcome)
 
@@ -517,6 +524,7 @@ class BackendSessionAffinity:
             )
         return await self.call_with_key(
             StickyCall(
+                server_name=server.name,
                 key=key,
                 extra_headers=extra_headers,
                 params=params,
@@ -540,7 +548,7 @@ class BackendSessionAffinity:
                 await self.refresh_ref(call.key)
                 return resumed.outcome
             if not is_dead_session_error(resumed.outcome):
-                return _tool_result(resumed)
+                return _tool_result(resumed, call)
             verbose_logger.info(
                 "mcp sticky: backend session for %s is gone (%s), opening a fresh one",
                 call.key,
@@ -592,7 +600,7 @@ class BackendSessionAffinity:
         attempt: Final = await self._run(client, call)
         refused: Final = attempt.outcome if isinstance(attempt.outcome, _RegistrationRefused) else None
         if refused is None:
-            return _tool_result(attempt)
+            return _tool_result(attempt, call)
         if refused.marker == _STICKY_SESSION_MISSING_MARKER:
             return sticky_error_result(
                 _STICKY_SESSION_MISSING_MARKER,
@@ -610,4 +618,4 @@ class BackendSessionAffinity:
                 "its ref is already gone" if refused.winner is None else "this call already replaced a dead session",
             )
             return sticky_error_result(_STICKY_LOST_RACE_MARKER, call.key)
-        return _tool_result(await self._resume(call, refused.winner))
+        return _tool_result(await self._resume(call, refused.winner), call)
