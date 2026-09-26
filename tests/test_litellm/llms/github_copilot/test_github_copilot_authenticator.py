@@ -83,11 +83,31 @@ class TestGitHubCopilotAuthenticator:
         with (
             patch.object(authenticator, "_login", return_value=mock_token),
             patch("builtins.open", mock_open()),
-            patch("builtins.open", side_effect=IOError) as mock_read,
+            patch("builtins.open", side_effect=FileNotFoundError) as mock_read,
         ):
             token = authenticator.get_access_token()
             assert token == mock_token
             authenticator._login.assert_called_once()
+
+    def test_unreadable_access_token_file_is_surfaced_not_treated_as_missing(
+        self, authenticator
+    ):
+        """Test that a permission error on the token file is logged and raised instead of starting a device flow."""
+        read_error = PermissionError(13, "Permission denied")
+
+        with (
+            patch("builtins.open", side_effect=read_error),
+            patch.object(authenticator, "_login") as mock_login,
+            patch("litellm.llms.github_copilot.authenticator.verbose_logger") as mock_logger,
+        ):
+            with pytest.raises(GetAccessTokenError) as exc_info:
+                authenticator.get_access_token()
+
+        assert authenticator.access_token_file in exc_info.value.message
+        assert "Permission denied" in exc_info.value.message
+        assert exc_info.value.__cause__ is read_error
+        assert read_error in mock_logger.error.call_args.args
+        mock_login.assert_not_called()
 
     def test_get_access_token_failure(self, authenticator):
         """Test that an exception is raised after multiple login failures."""
@@ -97,7 +117,7 @@ class TestGitHubCopilotAuthenticator:
                 "_login",
                 side_effect=GetDeviceCodeError(message="Test error", status_code=400),
             ),
-            patch("builtins.open", side_effect=IOError),
+            patch("builtins.open", side_effect=FileNotFoundError),
         ):
             with pytest.raises(GetAccessTokenError):
                 authenticator.get_access_token()

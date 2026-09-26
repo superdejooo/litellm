@@ -55,8 +55,14 @@ class Authenticator:
                 access_token = f.read().strip()
                 if access_token:
                     return access_token
-        except OSError:
-            verbose_logger.warning("No existing access token found or error reading file")
+        except FileNotFoundError:
+            verbose_logger.warning("No existing GitHub Copilot access token at %s", self.access_token_file)
+        except OSError as exc:
+            verbose_logger.error("Cannot read GitHub Copilot access token file %s: %s", self.access_token_file, exc)
+            raise GetAccessTokenError(
+                message=f"Cannot read GitHub Copilot access token file {self.access_token_file}: {exc}",
+                status_code=500,
+            ) from exc
 
         self._raise_if_interactive_login_disabled()
         for attempt in range(3):

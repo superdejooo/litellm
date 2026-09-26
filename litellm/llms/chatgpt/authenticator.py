@@ -99,8 +99,14 @@ class Authenticator:
         try:
             with open(self.auth_file, "r") as f:
                 return _JSON_OBJECT_ADAPTER.validate_python(json.load(f))
-        except OSError:
+        except FileNotFoundError:
             return None
+        except OSError as exc:
+            verbose_logger.error("Cannot read ChatGPT auth file %s: %s", self.auth_file, exc)
+            raise GetAccessTokenError(
+                message=f"Cannot read ChatGPT auth file {self.auth_file}: {exc}",
+                status_code=500,
+            ) from exc
         except (json.JSONDecodeError, ValidationError) as exc:
             verbose_logger.warning("Invalid ChatGPT auth file: %s", exc)
             return None

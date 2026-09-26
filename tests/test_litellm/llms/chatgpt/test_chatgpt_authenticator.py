@@ -73,6 +73,26 @@ class TestChatGPTAuthenticator:
             mock_write.assert_called_once()
             assert mock_write.call_args[0][0]["account_id"] == "acct-123"
 
+    def test_unreadable_auth_file_is_surfaced_not_treated_as_missing(
+        self, authenticator, monkeypatch
+    ):
+        monkeypatch.delenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", raising=False)
+        read_error = PermissionError(13, "Permission denied")
+
+        with (
+            patch("builtins.open", side_effect=read_error),
+            patch.object(authenticator, "_request_device_code") as mock_device_code,
+            patch("litellm.llms.chatgpt.authenticator.verbose_logger") as mock_logger,
+        ):
+            with pytest.raises(GetAccessTokenError) as exc_info:
+                authenticator.get_access_token()
+
+        assert authenticator.auth_file in exc_info.value.message
+        assert "Permission denied" in exc_info.value.message
+        assert exc_info.value.__cause__ is read_error
+        assert read_error in mock_logger.error.call_args.args
+        mock_device_code.assert_not_called()
+
     def test_interactive_oauth_disabled_raises_without_auth_file(
         self, authenticator, monkeypatch
     ):
