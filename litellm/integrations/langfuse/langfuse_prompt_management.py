@@ -10,7 +10,10 @@ from typing import TYPE_CHECKING, Any, Final, Literal, TypeAlias, cast
 from packaging.version import Version
 
 from litellm.integrations.custom_logger import CustomLogger
-from litellm.integrations.prompt_management_base import PromptManagementClient
+from litellm.integrations.prompt_management_base import (
+    PromptManagementClient,
+    resolve_prompt_manager_ignore_flags,
+)
 from litellm.litellm_core_utils.asyncify import run_async_function
 from litellm.types.integrations.langfuse_otel import LANGFUSE_PROMPT_LINK_KEY, LangfusePromptLink
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionSystemMessage
@@ -210,46 +213,41 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
         list[AllMessageValues],
         dict,
     ]:
-        rendered: Final = self.get_chat_completion_prompt(
-            model,
-            messages,
-            non_default_params,
-            prompt_id,
-            prompt_variables,
-            dynamic_callback_params,
+        """Render the prompt and record the rendered prompt's name and version so langfuse_otel can link to it."""
+        if prompt_id is None or not self.should_run_prompt_management(
+            prompt_id=prompt_id,
             prompt_spec=prompt_spec,
-            prompt_label=prompt_label,
-            prompt_version=prompt_version,
-            ignore_prompt_manager_model=ignore_prompt_manager_model,
-            ignore_prompt_manager_optional_params=ignore_prompt_manager_optional_params,
-        )
-        if prompt_id is not None:
-            self._record_prompt_link(
-                litellm_logging_obj=litellm_logging_obj,
-                prompt_id=prompt_id,
-                dynamic_callback_params=dynamic_callback_params,
-                prompt_label=prompt_label,
-                prompt_version=prompt_version,
-            )
-        return rendered
+            dynamic_callback_params=dynamic_callback_params,
+        ):
+            return model, messages, non_default_params
 
-    def _record_prompt_link(
-        self,
-        litellm_logging_obj: LiteLLMLoggingObj,
-        prompt_id: str,
-        dynamic_callback_params: StandardCallbackDynamicParams,
-        prompt_label: str | None,
-        prompt_version: int | None,
-    ) -> None:
-        """Store the rendered prompt's name and version on the call so langfuse_otel can link the generation to it."""
-        prompt_client: Final = self._get_prompt_from_id(
+        langfuse_prompt_client: Final = self._get_prompt_from_id(
             langfuse_prompt_id=prompt_id,
             langfuse_client=_langfuse_client_for_request(dynamic_callback_params),
             prompt_label=prompt_label,
             prompt_version=prompt_version,
         )
+        prompt_template: Final = self._render_prompt(
+            prompt_id=prompt_id,
+            langfuse_prompt_client=langfuse_prompt_client,
+            prompt_variables=prompt_variables,
+            client_messages=messages,
+        )
         litellm_logging_obj.model_call_details[LANGFUSE_PROMPT_LINK_KEY] = LangfusePromptLink(
-            name=prompt_client.name, version=prompt_client.version
+            name=langfuse_prompt_client.name, version=langfuse_prompt_client.version
+        )
+        resolved_ignore_model, resolved_ignore_optional_params = resolve_prompt_manager_ignore_flags(
+            prompt_spec=prompt_spec,
+            ignore_prompt_manager_model=ignore_prompt_manager_model,
+            ignore_prompt_manager_optional_params=ignore_prompt_manager_optional_params,
+        )
+        return self.post_compile_prompt_processing(
+            prompt_template=prompt_template,
+            messages=messages,
+            non_default_params=non_default_params,
+            model=model,
+            ignore_prompt_manager_model=resolved_ignore_model,
+            ignore_prompt_manager_optional_params=resolved_ignore_optional_params,
         )
 
     def should_run_prompt_management(
@@ -284,24 +282,31 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
             prompt_label=prompt_label,
             prompt_version=prompt_version,
         )
+        return self._render_prompt(
+            prompt_id=prompt_id,
+            langfuse_prompt_client=langfuse_prompt_client,
+            prompt_variables=prompt_variables,
+            client_messages=None,
+        )
 
-        ## SET PROMPT
+    def _render_prompt(
+        self,
+        prompt_id: str,
+        langfuse_prompt_client: PROMPT_CLIENT,
+        prompt_variables: dict | None,
+        client_messages: list[AllMessageValues] | None,
+    ) -> PromptManagementClient:
         compiled_prompt: Final = self._compile_prompt(
             langfuse_prompt_client=langfuse_prompt_client,
             langfuse_prompt_variables=prompt_variables,
             call_type="completion",
         )
-
-        template_model: Final = langfuse_prompt_client.config.get("model")
-
-        template_optional_params: Final = self._get_optional_params_from_langfuse(langfuse_prompt_client)
-
         return PromptManagementClient(
             prompt_id=prompt_id,
             prompt_template=compiled_prompt,
-            prompt_template_model=template_model,
-            prompt_template_optional_params=template_optional_params,
-            completed_messages=None,
+            prompt_template_model=langfuse_prompt_client.config.get("model"),
+            prompt_template_optional_params=self._get_optional_params_from_langfuse(langfuse_prompt_client),
+            completed_messages=None if client_messages is None else [*compiled_prompt, *client_messages],
         )
 
     async def async_compile_prompt_helper(

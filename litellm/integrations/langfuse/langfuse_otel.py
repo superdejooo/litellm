@@ -132,11 +132,16 @@ class LangfuseOtelLogger(OpenTelemetry):
         from litellm.integrations.arize._utils import safe_set_attribute
 
         prompt_link: Final = kwargs.get(LANGFUSE_PROMPT_LINK_KEY)
-        if not isinstance(prompt_link, dict):
+        if prompt_link is None:
             return
-        name: Final = prompt_link.get("name")
-        version: Final = prompt_link.get("version")
+        name: Final = prompt_link.get("name") if isinstance(prompt_link, dict) else None
+        version: Final = prompt_link.get("version") if isinstance(prompt_link, dict) else None
         if not isinstance(name, str) or not name or not isinstance(version, int) or isinstance(version, bool):
+            verbose_logger.warning(
+                "langfuse_otel: ignoring malformed %s %r; the generation is not linked to its Langfuse prompt",
+                LANGFUSE_PROMPT_LINK_KEY,
+                prompt_link,
+            )
             return
         safe_set_attribute(span, LangfuseSpanAttributes.OBSERVATION_PROMPT_NAME.value, name)
         safe_set_attribute(span, LangfuseSpanAttributes.OBSERVATION_PROMPT_VERSION.value, version)

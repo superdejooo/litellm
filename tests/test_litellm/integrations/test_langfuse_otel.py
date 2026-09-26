@@ -215,10 +215,18 @@ class TestLangfuseOtelIntegration:
         assert span.attributes["langfuse.observation.prompt.name"] == "events/description-create"
         assert span.attributes["langfuse.observation.prompt.version"] == 7
 
+    def test_absent_prompt_link_writes_no_prompt_attributes_and_no_warning(self):
+        span = _RecordingSpan()
+
+        with patch("litellm.integrations.langfuse.langfuse_otel.verbose_logger") as mock_logger:
+            LangfuseOtelLogger._set_langfuse_specific_attributes(span, {"langfuse_prompt_link": None}, None)
+
+        assert not any(key.startswith("langfuse.observation.prompt.") for key in span.attributes)
+        mock_logger.warning.assert_not_called()
+
     @pytest.mark.parametrize(
         "prompt_link",
         [
-            None,
             "events/description-create",
             {"name": "events/description-create"},
             {"name": "", "version": 7},
@@ -226,12 +234,18 @@ class TestLangfuseOtelIntegration:
             {"name": "events/description-create", "version": True},
         ],
     )
-    def test_incomplete_prompt_link_writes_no_prompt_attributes(self, prompt_link):
+    def test_malformed_prompt_link_writes_no_prompt_attributes_and_warns(self, prompt_link):
         span = _RecordingSpan()
 
-        LangfuseOtelLogger._set_langfuse_specific_attributes(span, {"langfuse_prompt_link": prompt_link}, None)
+        with patch("litellm.integrations.langfuse.langfuse_otel.verbose_logger") as mock_logger:
+            LangfuseOtelLogger._set_langfuse_specific_attributes(span, {"langfuse_prompt_link": prompt_link}, None)
 
         assert not any(key.startswith("langfuse.observation.prompt.") for key in span.attributes)
+        mock_logger.warning.assert_called_once()
+        warning_args = mock_logger.warning.call_args.args
+        warning = warning_args[0] % warning_args[1:]
+        assert "langfuse_prompt_link" in warning
+        assert repr(prompt_link) in warning
 
     def test_set_langfuse_specific_attributes_metadata(self):
         """Verify every supported metadata key maps to the correct OTEL attribute and complex types are JSON-serialised."""

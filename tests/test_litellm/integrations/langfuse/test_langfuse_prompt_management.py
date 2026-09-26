@@ -84,6 +84,68 @@ class TestLangfusePromptManagement:
         assert get_prompt.call_args.kwargs["prompt_label"] == "staging"
         langfuse_client_init.cache_clear()
 
+    @staticmethod
+    def _prompt_client(version: int) -> SimpleNamespace:
+        return SimpleNamespace(
+            name="events/description-create",
+            version=version,
+            config={},
+            compile=lambda **_: [{"role": "system", "content": f"Describe v{version}"}],
+        )
+
+    @pytest.mark.asyncio
+    async def test_prompt_link_names_the_version_that_was_rendered(self):
+        manager = LangfusePromptManagement()
+        fetched_versions = iter(range(7, 20))
+        logging_obj = SimpleNamespace(model_call_details={})
+
+        with patch.object(
+            manager,
+            "_get_prompt_from_id",
+            side_effect=lambda **_: self._prompt_client(next(fetched_versions)),
+        ):
+            _, messages, _ = await manager.async_get_chat_completion_prompt(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": "Launch party"}],
+                non_default_params={},
+                prompt_id="events/description-create",
+                prompt_variables={},
+                dynamic_callback_params={},
+                litellm_logging_obj=logging_obj,
+            )
+
+        rendered_version = logging_obj.model_call_details["langfuse_prompt_link"]["version"]
+        assert messages[0] == {"role": "system", "content": f"Describe v{rendered_version}"}
+        langfuse_client_init.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_prompt_link_does_not_fail_an_already_rendered_request(self):
+        manager = LangfusePromptManagement()
+        logging_obj = SimpleNamespace(model_call_details={})
+        rendered_client = self._prompt_client(7)
+
+        with patch.object(
+            manager,
+            "_get_prompt_from_id",
+            side_effect=[rendered_client, rendered_client, httpx.ConnectError("langfuse down")],
+        ):
+            _, messages, _ = await manager.async_get_chat_completion_prompt(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": "Launch party"}],
+                non_default_params={},
+                prompt_id="events/description-create",
+                prompt_variables={},
+                dynamic_callback_params={},
+                litellm_logging_obj=logging_obj,
+            )
+
+        assert messages[0] == {"role": "system", "content": "Describe v7"}
+        assert logging_obj.model_call_details["langfuse_prompt_link"] == {
+            "name": "events/description-create",
+            "version": 7,
+        }
+        langfuse_client_init.cache_clear()
+
     @pytest.mark.asyncio
     async def test_async_render_without_prompt_id_records_no_prompt_link(self):
         manager = LangfusePromptManagement()
