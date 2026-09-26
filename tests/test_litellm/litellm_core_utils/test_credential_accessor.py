@@ -1,4 +1,6 @@
+import logging
 from pathlib import Path
+from typing import Final
 
 import pytest
 
@@ -147,6 +149,43 @@ def test_is_file_credential_ref_only_claims_file_uris(value: object, expected: b
 )
 def test_file_credential_ttl_falls_back_to_the_default_outside_a_sane_range(raw: str | None, expected: float) -> None:
     assert credential_accessor._parse_file_credential_ttl_seconds(raw) == expected
+
+
+@pytest.mark.parametrize("raw", ["not-a-number", "inf", "0", "3601"])
+def test_an_invalid_file_credential_ttl_is_reported_once(raw: str, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+        credential_accessor._parse_file_credential_ttl_seconds(raw)
+
+    warnings: Final = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "FILE_CREDENTIAL_TTL_SECONDS" in warnings[0]
+    assert repr(raw) in warnings[0]
+
+
+@pytest.mark.parametrize("raw", [None, "", "2.5"])
+def test_an_unset_or_valid_file_credential_ttl_is_not_reported(
+    raw: str | None, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="LiteLLM"):
+        credential_accessor._parse_file_credential_ttl_seconds(raw)
+
+    assert [record for record in caplog.records if record.levelno >= logging.WARNING] == []
+
+
+@pytest.mark.parametrize("content", [None, "  \n"])
+def test_a_failed_file_credential_keeps_its_path_in_the_log_and_out_of_the_error(
+    clock: FakeClock, token_file: Path, caplog: pytest.LogCaptureFixture, content: str | None
+) -> None:
+    if content is not None:
+        token_file.write_text(content, encoding="utf-8")
+
+    with caplog.at_level(logging.ERROR, logger="LiteLLM"), pytest.raises(ValueError) as raised:
+        resolve_file_credential(_ref(token_file))
+
+    assert str(token_file) not in str(raised.value)
+    assert "No such file" not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert str(token_file) in caplog.text
 
 
 def _load_credential(monkeypatch: pytest.MonkeyPatch, credential_values: dict[str, str]) -> None:

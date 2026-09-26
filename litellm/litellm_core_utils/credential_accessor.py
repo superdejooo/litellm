@@ -7,6 +7,7 @@ from types import MappingProxyType
 from typing import Final, NamedTuple
 
 import litellm
+from litellm._logging import verbose_logger
 from litellm.types.utils import CredentialItem
 
 FILE_CREDENTIAL_SCHEME: Final = "file://"
@@ -14,13 +15,28 @@ _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS: Final = 5.0
 _MAX_FILE_CREDENTIAL_TTL_SECONDS: Final = 3600.0
 
 
-def _parse_file_credential_ttl_seconds(raw: str | None) -> float:
+def _as_float(raw: str) -> float | None:
     try:
-        ttl: Final = float(raw or _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS)
+        return float(raw)
     except ValueError:
+        return None
+
+
+def _parse_file_credential_ttl_seconds(raw: str | None) -> float:
+    """Called once, at import, so an invalid value is reported exactly once."""
+    if not raw:
         return _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS
+    ttl: Final = _as_float(raw)
     # float() accepts "inf", which would cache a value no file swap ever replaces; NaN fails this check too
-    return ttl if 0 < ttl <= _MAX_FILE_CREDENTIAL_TTL_SECONDS else _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS
+    if ttl is not None and 0 < ttl <= _MAX_FILE_CREDENTIAL_TTL_SECONDS:
+        return ttl
+    verbose_logger.warning(
+        "FILE_CREDENTIAL_TTL_SECONDS=%r is not a number of seconds in (0, %s]; using the default %ss",
+        raw,
+        _MAX_FILE_CREDENTIAL_TTL_SECONDS,
+        _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS,
+    )
+    return _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS
 
 
 FILE_CREDENTIAL_TTL_SECONDS: Final = _parse_file_credential_ttl_seconds(os.getenv("FILE_CREDENTIAL_TTL_SECONDS"))
@@ -53,14 +69,14 @@ def resolve_file_credential(ref: str) -> str:
         with open(path, encoding="utf-8") as credential_file:
             value: Final = credential_file.read().strip()
     except (OSError, UnicodeDecodeError) as e:
+        verbose_logger.error("file credential %s unreadable: %s", path, e)
+        # The message reaches API callers, so the host path and OS error stay in the log above
         raise ValueError(
-            f"file credential {path} unreadable ({e}): the credential file must exist and be readable; "
-            "there is no env fallback"
-        ) from e
+            "file credential unreadable: the credential file must exist and be readable; there is no env fallback"
+        ) from None
     if not value:
-        raise ValueError(
-            f"file credential {path} is empty: refusing to send an empty credential; there is no env fallback"
-        )
+        verbose_logger.error("file credential %s is empty", path)
+        raise ValueError("file credential is empty: refusing to send an empty credential; there is no env fallback")
     _file_credential_cache[path] = _CachedFileCredential(expires_at=now + FILE_CREDENTIAL_TTL_SECONDS, value=value)
     _file_credential_history[path] = _file_credential_history.get(path, frozenset()) | frozenset((value,))
     return value
