@@ -12,6 +12,7 @@ from packaging.version import Version
 from litellm.integrations.custom_logger import CustomLogger
 from litellm.integrations.prompt_management_base import PromptManagementClient
 from litellm.litellm_core_utils.asyncify import run_async_function
+from litellm.types.integrations.langfuse_otel import LANGFUSE_PROMPT_LINK_KEY, LangfusePromptLink
 from litellm.types.llms.openai import AllMessageValues, ChatCompletionSystemMessage
 from litellm.types.prompts.init_prompts import PromptSpec
 from litellm.types.utils import StandardCallbackDynamicParams, StandardLoggingPayload
@@ -118,6 +119,16 @@ def langfuse_client_init(
     return client
 
 
+def _langfuse_client_for_request(dynamic_callback_params: StandardCallbackDynamicParams) -> LangfuseClass:
+    return langfuse_client_init(
+        langfuse_public_key=dynamic_callback_params.get("langfuse_public_key"),
+        langfuse_secret=dynamic_callback_params.get("langfuse_secret"),
+        langfuse_secret_key=dynamic_callback_params.get("langfuse_secret_key"),
+        langfuse_host=dynamic_callback_params.get("langfuse_host"),
+        allow_env_credentials=dynamic_callback_params.get("langfuse_host") is None,
+    )
+
+
 class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogger):
     def __init__(
         self,
@@ -199,7 +210,7 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
         list[AllMessageValues],
         dict,
     ]:
-        return self.get_chat_completion_prompt(
+        rendered: Final = self.get_chat_completion_prompt(
             model,
             messages,
             non_default_params,
@@ -212,6 +223,34 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
             ignore_prompt_manager_model=ignore_prompt_manager_model,
             ignore_prompt_manager_optional_params=ignore_prompt_manager_optional_params,
         )
+        if prompt_id is not None:
+            self._record_prompt_link(
+                litellm_logging_obj=litellm_logging_obj,
+                prompt_id=prompt_id,
+                dynamic_callback_params=dynamic_callback_params,
+                prompt_label=prompt_label,
+                prompt_version=prompt_version,
+            )
+        return rendered
+
+    def _record_prompt_link(
+        self,
+        litellm_logging_obj: LiteLLMLoggingObj,
+        prompt_id: str,
+        dynamic_callback_params: StandardCallbackDynamicParams,
+        prompt_label: str | None,
+        prompt_version: int | None,
+    ) -> None:
+        """Store the rendered prompt's name and version on the call so langfuse_otel can link the generation to it."""
+        prompt_client: Final = self._get_prompt_from_id(
+            langfuse_prompt_id=prompt_id,
+            langfuse_client=_langfuse_client_for_request(dynamic_callback_params),
+            prompt_label=prompt_label,
+            prompt_version=prompt_version,
+        )
+        litellm_logging_obj.model_call_details[LANGFUSE_PROMPT_LINK_KEY] = LangfusePromptLink(
+            name=prompt_client.name, version=prompt_client.version
+        )
 
     def should_run_prompt_management(
         self,
@@ -221,16 +260,9 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
     ) -> bool:
         if prompt_id is None:
             return False
-        langfuse_client: Final = langfuse_client_init(
-            langfuse_public_key=dynamic_callback_params.get("langfuse_public_key"),
-            langfuse_secret=dynamic_callback_params.get("langfuse_secret"),
-            langfuse_secret_key=dynamic_callback_params.get("langfuse_secret_key"),
-            langfuse_host=dynamic_callback_params.get("langfuse_host"),
-            allow_env_credentials=dynamic_callback_params.get("langfuse_host") is None,
-        )
         langfuse_prompt_client: Final = self._get_prompt_from_id(
             langfuse_prompt_id=prompt_id,
-            langfuse_client=langfuse_client,
+            langfuse_client=_langfuse_client_for_request(dynamic_callback_params),
         )
         return langfuse_prompt_client is not None
 
@@ -246,16 +278,9 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
         if prompt_id is None:
             raise ValueError("prompt_id is required for Langfuse prompt management")
 
-        langfuse_client: Final = langfuse_client_init(
-            langfuse_public_key=dynamic_callback_params.get("langfuse_public_key"),
-            langfuse_secret=dynamic_callback_params.get("langfuse_secret"),
-            langfuse_secret_key=dynamic_callback_params.get("langfuse_secret_key"),
-            langfuse_host=dynamic_callback_params.get("langfuse_host"),
-            allow_env_credentials=dynamic_callback_params.get("langfuse_host") is None,
-        )
         langfuse_prompt_client: Final = self._get_prompt_from_id(
             langfuse_prompt_id=prompt_id,
-            langfuse_client=langfuse_client,
+            langfuse_client=_langfuse_client_for_request(dynamic_callback_params),
             prompt_label=prompt_label,
             prompt_version=prompt_version,
         )

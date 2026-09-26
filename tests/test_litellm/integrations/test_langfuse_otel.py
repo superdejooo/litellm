@@ -9,6 +9,14 @@ from litellm.integrations.opentelemetry import OpenTelemetryConfig
 from litellm.types.llms.openai import ResponsesAPIResponse
 
 
+class _RecordingSpan:
+    def __init__(self):
+        self.attributes = {}
+
+    def set_attribute(self, key, value):
+        self.attributes[key] = value
+
+
 class TestLangfuseOtelIntegration:
     def test_get_langfuse_otel_config_with_required_env_vars(self):
         """Test that config is created correctly with required environment variables."""
@@ -197,6 +205,33 @@ class TestLangfuseOtelIntegration:
         extracted = LangfuseOtelLogger._extract_langfuse_metadata(kwargs)
         assert extracted.get("foo") == "bar"
         assert extracted.get("enriched") is True
+
+    def test_rendered_prompt_link_becomes_langfuse_observation_prompt_attributes(self):
+        span = _RecordingSpan()
+        kwargs = {"langfuse_prompt_link": {"name": "events/description-create", "version": 7}}
+
+        LangfuseOtelLogger._set_langfuse_specific_attributes(span, kwargs, None)
+
+        assert span.attributes["langfuse.observation.prompt.name"] == "events/description-create"
+        assert span.attributes["langfuse.observation.prompt.version"] == 7
+
+    @pytest.mark.parametrize(
+        "prompt_link",
+        [
+            None,
+            "events/description-create",
+            {"name": "events/description-create"},
+            {"name": "", "version": 7},
+            {"name": "events/description-create", "version": "7"},
+            {"name": "events/description-create", "version": True},
+        ],
+    )
+    def test_incomplete_prompt_link_writes_no_prompt_attributes(self, prompt_link):
+        span = _RecordingSpan()
+
+        LangfuseOtelLogger._set_langfuse_specific_attributes(span, {"langfuse_prompt_link": prompt_link}, None)
+
+        assert not any(key.startswith("langfuse.observation.prompt.") for key in span.attributes)
 
     def test_set_langfuse_specific_attributes_metadata(self):
         """Verify every supported metadata key maps to the correct OTEL attribute and complex types are JSON-serialised."""

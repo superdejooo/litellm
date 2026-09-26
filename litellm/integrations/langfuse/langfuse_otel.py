@@ -12,6 +12,7 @@ from litellm.integrations.langfuse.langfuse_otel_attributes import (
 from litellm.integrations.opentelemetry import OpenTelemetry, OpenTelemetryConfig
 from litellm.litellm_core_utils.safe_json_loads import safe_json_loads
 from litellm.types.integrations.langfuse_otel import (
+    LANGFUSE_PROMPT_LINK_KEY,
     LangfuseSpanAttributes,
 )
 from litellm.types.utils import StandardCallbackDynamicParams
@@ -124,6 +125,21 @@ class LangfuseOtelLogger(OpenTelemetry):
                     except Exception:
                         value = str(value)
                 safe_set_attribute(span, enum_attr.value, value)
+
+    @staticmethod
+    def _set_prompt_link_attributes(span: Span, kwargs: dict) -> None:
+        """Link the generation to the Langfuse prompt version the gateway rendered for this call."""
+        from litellm.integrations.arize._utils import safe_set_attribute
+
+        prompt_link: Final = kwargs.get(LANGFUSE_PROMPT_LINK_KEY)
+        if not isinstance(prompt_link, dict):
+            return
+        name: Final = prompt_link.get("name")
+        version: Final = prompt_link.get("version")
+        if not isinstance(name, str) or not name or not isinstance(version, int) or isinstance(version, bool):
+            return
+        safe_set_attribute(span, LangfuseSpanAttributes.OBSERVATION_PROMPT_NAME.value, name)
+        safe_set_attribute(span, LangfuseSpanAttributes.OBSERVATION_PROMPT_VERSION.value, version)
 
     @staticmethod
     def _set_observation_output(span: Span, response_obj):
@@ -244,6 +260,7 @@ class LangfuseOtelLogger(OpenTelemetry):
 
         metadata: Final = LangfuseOtelLogger._extract_langfuse_metadata(kwargs)
         LangfuseOtelLogger._set_metadata_attributes(span=span, metadata=metadata)
+        LangfuseOtelLogger._set_prompt_link_attributes(span=span, kwargs=kwargs)
 
         messages: Final = kwargs.get("messages")
         if messages:

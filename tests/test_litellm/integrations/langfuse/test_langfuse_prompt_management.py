@@ -1,9 +1,13 @@
-from types import MappingProxyType
+import asyncio
+from datetime import datetime
+from types import MappingProxyType, SimpleNamespace
 from typing import Final
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
+import litellm
 from litellm.integrations.langfuse.langfuse_prompt_management import (
     LangfusePromptManagement,
     langfuse_client_init,
@@ -48,6 +52,57 @@ class TestLangfusePromptManagement:
 
             mock_get_prompt_from_id.assert_called_once()
             assert mock_get_prompt_from_id.call_args.kwargs["prompt_version"] == 4
+
+    @pytest.mark.asyncio
+    async def test_async_render_records_the_prompt_link_on_the_logging_object(self):
+        manager = LangfusePromptManagement()
+        prompt_client = SimpleNamespace(
+            name="events/description-create",
+            version=7,
+            config={},
+            compile=lambda **variables: [{"role": "system", "content": f"Describe {variables['event']}"}],
+        )
+        logging_obj = SimpleNamespace(model_call_details={})
+
+        with patch.object(manager, "_get_prompt_from_id", return_value=prompt_client) as get_prompt:
+            _, messages, _ = await manager.async_get_chat_completion_prompt(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": "Launch party"}],
+                non_default_params={},
+                prompt_id="events/description-create",
+                prompt_variables={"event": "launch"},
+                dynamic_callback_params={},
+                litellm_logging_obj=logging_obj,
+                prompt_label="staging",
+            )
+
+        assert messages[0] == {"role": "system", "content": "Describe launch"}
+        assert logging_obj.model_call_details["langfuse_prompt_link"] == {
+            "name": "events/description-create",
+            "version": 7,
+        }
+        assert get_prompt.call_args.kwargs["prompt_label"] == "staging"
+        langfuse_client_init.cache_clear()
+
+    @pytest.mark.asyncio
+    async def test_async_render_without_prompt_id_records_no_prompt_link(self):
+        manager = LangfusePromptManagement()
+        logging_obj = SimpleNamespace(model_call_details={})
+
+        with patch.object(manager, "_get_prompt_from_id") as get_prompt:
+            await manager.async_get_chat_completion_prompt(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": "hi"}],
+                non_default_params={},
+                prompt_id=None,
+                prompt_variables=None,
+                dynamic_callback_params={},
+                litellm_logging_obj=logging_obj,
+            )
+
+        get_prompt.assert_not_called()
+        assert "langfuse_prompt_link" not in logging_obj.model_call_details
+        langfuse_client_init.cache_clear()
 
     def test_log_failure_event_runs_async_logger(self):
         langfuse_prompt_management = LangfusePromptManagement()
@@ -137,3 +192,110 @@ def test_langfuse_client_init_resolves_deployment_environment(monkeypatch, env_v
         langfuse_client_init()
     langfuse_client_init.cache_clear()
     assert _RecordingLangfuseForEnv.last_environment == expected
+
+
+@pytest.fixture
+def isolated_callbacks(monkeypatch):
+    for callback_list in (
+        "callbacks",
+        "input_callback",
+        "success_callback",
+        "failure_callback",
+        "_async_success_callback",
+        "_async_failure_callback",
+        "_async_input_callback",
+    ):
+        monkeypatch.setattr(litellm, callback_list, [])
+
+
+@pytest.mark.asyncio
+async def test_rendered_config_prompt_is_linked_on_the_langfuse_otel_span(monkeypatch, isolated_callbacks):
+    respx = pytest.importorskip("respx")
+    pytest.importorskip("langfuse.client")
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from litellm.integrations.langfuse.langfuse_otel import LangfuseOtelLogger
+    from litellm.integrations.opentelemetry import OpenTelemetryConfig
+    from litellm.proxy._types import UserAPIKeyAuth
+    from litellm.proxy.common_utils.user_api_key_cache import UserApiKeyCache
+    from litellm.proxy.prompts import prompt_registry
+    from litellm.proxy.utils import ProxyLogging
+    from litellm.types.prompts.init_prompts import PromptSpec
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-prompt-link")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-prompt-link")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://langfuse-prompt-link.test")
+    langfuse_client_init.cache_clear()
+    registry: Final = prompt_registry.InMemoryPromptRegistry()
+    monkeypatch.setattr(prompt_registry, "IN_MEMORY_PROMPT_REGISTRY", registry)
+    exporter: Final = InMemorySpanExporter()
+    tracer_provider: Final = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    otel_logger: Final = LangfuseOtelLogger(
+        config=OpenTelemetryConfig(exporter="console"), callback_name="langfuse_otel", tracer_provider=tracer_provider
+    )
+
+    with respx.mock(assert_all_called=True) as langfuse_api:
+        langfuse_api.get(
+            url__regex=r"^http://langfuse-prompt-link\.test/api/public/v2/prompts/events%2Fdescription-create(\?.*)?$"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "name": "events/description-create",
+                    "version": 7,
+                    "prompt": [{"role": "system", "content": "Describe the {{event}}"}],
+                    "config": {},
+                    "labels": ["production"],
+                    "tags": [],
+                    "type": "chat",
+                },
+            )
+        )
+        registry.initialize_prompt(
+            PromptSpec(
+                prompt_id="events/description-create",
+                litellm_params={
+                    "prompt_id": "events/description-create",
+                    "prompt_integration": "langfuse",
+                    "langfuse_host": "os.environ/LANGFUSE_HOST",
+                    "langfuse_public_key": "os.environ/LANGFUSE_PUBLIC_KEY",
+                    "langfuse_secret_key": "os.environ/LANGFUSE_SECRET_KEY",
+                },
+            )
+        )
+        litellm.logging_callback_manager.add_litellm_callback(otel_logger)
+        logging_obj, data = litellm.utils.function_setup(
+            "acompletion",
+            litellm.utils.Rules(),
+            datetime.now(),
+            litellm_call_id="prompt-link-call",
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "Launch party"}],
+            prompt_id="events/description-create",
+            prompt_variables={"event": "launch"},
+        )
+        data["litellm_logging_obj"] = logging_obj
+
+        rendered = await ProxyLogging(user_api_key_cache=UserApiKeyCache()).pre_call_hook(
+            user_api_key_dict=UserAPIKeyAuth(), data=data, call_type="acompletion"
+        )
+        await litellm.acompletion(**rendered, mock_response="A launch party.")
+
+    for _ in range(50):
+        if exporter.get_finished_spans():
+            break
+        await asyncio.sleep(0.1)
+    langfuse_client_init.cache_clear()
+
+    assert rendered["messages"][0] == {"role": "system", "content": "Describe the launch"}
+    generation_spans = [
+        span
+        for span in exporter.get_finished_spans()
+        if span.attributes.get("langfuse.observation.type") == "generation"
+    ]
+    assert len(generation_spans) == 1
+    assert generation_spans[0].attributes["langfuse.observation.prompt.name"] == "events/description-create"
+    assert generation_spans[0].attributes["langfuse.observation.prompt.version"] == 7

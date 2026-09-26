@@ -1,12 +1,21 @@
 from enum import Enum
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Final, Literal
 
 from pydantic import BaseModel
+from typing_extensions import ReadOnly, TypedDict
 
 if TYPE_CHECKING:
     Protocol = Literal["otlp_grpc", "otlp_http"]
 else:
     Protocol = Any
+
+
+LANGFUSE_PROMPT_LINK_KEY: Final = "langfuse_prompt_link"
+
+
+class LangfusePromptLink(TypedDict):
+    name: ReadOnly[str]
+    version: ReadOnly[int]
 
 
 class LangfuseOtelConfig(BaseModel):
@@ -29,6 +38,8 @@ class LangfuseSpanAttributes(str, Enum):
     # ---- Observation input/output ----
     OBSERVATION_INPUT = "langfuse.observation.input"
     OBSERVATION_OUTPUT = "langfuse.observation.output"
+    OBSERVATION_PROMPT_NAME = "langfuse.observation.prompt.name"
+    OBSERVATION_PROMPT_VERSION = "langfuse.observation.prompt.version"
 
     # ---- Trace-level metadata ----
     TRACE_USER_ID = "user.id"
