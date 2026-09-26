@@ -850,6 +850,30 @@ class TestStickyDispatchGate:
         assert len(factory.created) == 1
         assert stored_sid(redis) == "live-1"
 
+    @pytest.mark.asyncio
+    async def test_a_failed_resume_does_not_extend_the_session_ref(self) -> None:
+        """A session that keeps failing with an error not classified as dead must age out, not be kept alive
+        by every failed call."""
+        clock: Final = Clock()
+        aff: Final = make_affinity(clock=clock)
+        await aff.store_ref("key-1", json.dumps({"sid": "live-1"}))
+        clock.now += 1000
+        result: Final = await call_sticky(aff, Factory([FakeClient(transport_error=http_status_error(500))]))
+        clock.now += 900
+        assert result.isError is True
+        assert await aff.load_ref("key-1") is None
+
+    @pytest.mark.asyncio
+    async def test_a_successful_resume_extends_the_session_ref(self) -> None:
+        clock: Final = Clock()
+        aff: Final = make_affinity(clock=clock)
+        await aff.store_ref("key-1", json.dumps({"sid": "live-1"}))
+        clock.now += 1000
+        result: Final = await call_sticky(aff, Factory([FakeClient()]))
+        clock.now += 900
+        assert result.isError is False
+        assert await aff.load_ref("key-1") == SessionRef(sid="live-1", pv=None)
+
 
 class TestNonStickyUntouched:
     @pytest.mark.asyncio

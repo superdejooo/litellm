@@ -504,8 +504,10 @@ class BackendSessionAffinity:
             if ref is None:
                 return await self._fresh_call(call, allow_race_resume=True)
             resumed: Final = await self._resume(call, ref)
-            if not isinstance(resumed.outcome, Exception) or not is_dead_session_error(resumed.outcome):
+            if isinstance(resumed.outcome, CallToolResult):
                 await self.refresh_ref(call.key)
+                return resumed.outcome
+            if not is_dead_session_error(resumed.outcome):
                 return _tool_result(resumed)
             verbose_logger.info(
                 "mcp sticky: backend session for %s is gone (%s), opening a fresh one",
