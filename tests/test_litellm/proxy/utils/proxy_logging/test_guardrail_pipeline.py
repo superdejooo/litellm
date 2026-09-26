@@ -780,6 +780,31 @@ async def test_process_prompt_template_applies_when_spec_resolves(proxy_logging,
 
 
 @pytest.mark.asyncio
+async def test_process_prompt_template_passes_none_when_label_and_version_are_absent(proxy_logging, monkeypatch):
+    from litellm.proxy.prompts import prompt_registry
+
+    prompt_spec = MagicMock()
+    prompt_spec.litellm_params = MagicMock(prompt_id="events/summary")
+    monkeypatch.setattr(prompt_registry.IN_MEMORY_PROMPT_REGISTRY, "resolve_prompt_spec", lambda *a, **kw: prompt_spec)
+    monkeypatch.setattr(
+        prompt_registry.IN_MEMORY_PROMPT_REGISTRY, "get_prompt_callback_for_prompt", lambda *a, **kw: MagicMock()
+    )
+    logging_obj = MagicMock()
+    logging_obj.async_get_chat_completion_prompt = AsyncMock(return_value=("m", [], {}))
+
+    await proxy_logging._process_prompt_template(
+        data={"messages": [], "model": "m", "prompt_id": "events/summary"},
+        litellm_logging_obj=logging_obj,
+        prompt_id="events/summary",
+        prompt_version=None,
+        call_type="completion",
+    )
+
+    hook_kwargs = logging_obj.async_get_chat_completion_prompt.await_args.kwargs
+    assert (hook_kwargs["prompt_label"], hook_kwargs["prompt_version"]) == (None, None)
+
+
+@pytest.mark.asyncio
 async def test_process_prompt_template_async_get_prompt_error_raises(proxy_logging, monkeypatch):
     from litellm.proxy.prompts import prompt_registry
 
