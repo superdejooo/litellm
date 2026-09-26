@@ -35,7 +35,12 @@ _TransportContext: TypeAlias = AbstractAsyncContextManager[_TransportStreams]
 class _StreamableHttpClientFactory(Protocol):
     """The ``streamable_http_client`` entry point this module calls on the installed MCP SDK."""
 
-    def __call__(self, *, url: str, http_client: httpx.AsyncClient | None) -> _TransportContext: ...
+    def __call__(
+        self, *, url: str, http_client: httpx.AsyncClient | None, terminate_on_close: bool = True
+    ) -> _TransportContext: ...
+
+
+SessionInitializedHook: TypeAlias = Callable[[str | None, str | None], Awaitable[None]]
 
 
 streamable_http_client: _StreamableHttpClientFactory | None = None
@@ -319,6 +324,9 @@ class MCPClient:
         sampling_callback: Callable | None = None,
         elicitation_callback: Callable | None = None,
         logging_callback: Callable | None = None,
+        skip_initialize: bool = False,
+        terminate_on_close: bool = True,
+        on_session_initialized: SessionInitializedHook | None = None,
     ):
         self.server_url: str = server_url
         self.transport_type: MCPTransport = transport_type
@@ -341,6 +349,11 @@ class MCPClient:
         self._sampling_callback: Callable | None = sampling_callback
         self._elicitation_callback: Callable | None = elicitation_callback
         self._logging_callback: Callable | None = logging_callback
+        self.skip_initialize: bool = skip_initialize
+        self.terminate_on_close: bool = terminate_on_close
+        self.on_session_initialized: SessionInitializedHook | None = on_session_initialized
+        self.last_session_id: str | None = None
+        self.last_protocol_version: str | None = None
         # handle the basic auth value if provided
         if auth_value:
             self.update_auth_value(auth_value)
@@ -405,6 +418,7 @@ class MCPClient:
         transport_ctx: Final = streamable_http_client(
             url=self.server_url,
             http_client=http_client,
+            terminate_on_close=self.terminate_on_close,
         )
         return transport_ctx, http_client
 
@@ -454,6 +468,22 @@ class MCPClient:
 
         return safe_env
 
+    async def _initialize_session(self, session: ClientSession, transport: _TransportStreams) -> None:
+        """Initialize the session, record its id and protocol version, then run ``on_session_initialized``."""
+        init_result: Final = await session.initialize()
+        self._last_initialize_instructions = None
+        if init_result is not None:
+            ins: Final = getattr(init_result, "instructions", None)
+            if isinstance(ins, str) and ins.strip():
+                self._last_initialize_instructions = ins.strip()
+        get_session_id: Final = transport[2] if len(transport) > 2 else None
+        session_id: Final = get_session_id() if callable(get_session_id) else None
+        self.last_session_id = session_id if isinstance(session_id, str) else None
+        protocol_version: Final = getattr(init_result, "protocolVersion", None)
+        self.last_protocol_version = protocol_version if isinstance(protocol_version, str) else None
+        if self.on_session_initialized is not None:
+            await self.on_session_initialized(self.last_session_id, self.last_protocol_version)
+
     async def _execute_session_operation(
         self,
         transport_ctx: _TransportContext,
@@ -501,12 +531,8 @@ class MCPClient:
             )
             session: Final = await session_ctx.__aenter__()
             try:
-                init_result: Final = await session.initialize()
-                self._last_initialize_instructions = None
-                if init_result is not None:
-                    ins: Final = getattr(init_result, "instructions", None)
-                    if isinstance(ins, str) and ins.strip():
-                        self._last_initialize_instructions = ins.strip()
+                if not self.skip_initialize:
+                    await self._initialize_session(session, transport)
                 return await operation(session)
             except McpError:
                 if stream_error.done():
@@ -563,6 +589,16 @@ class MCPClient:
                     await http_client.aclose()
                 except BaseException as e:
                     verbose_logger.debug("Error during http_client cleanup: %s", e)
+
+    async def terminate_session(self, session_id: str) -> None:
+        """DELETE a backend session left open by ``terminate_on_close=False``; raises on an HTTP error."""
+        httpx_client_factory: Final = self._create_httpx_client_factory()
+        async with httpx_client_factory(
+            headers={**self._get_auth_headers(), "mcp-session-id": session_id},
+            timeout=httpx.Timeout(self.timeout),
+        ) as http_client:
+            response: Final = await http_client.delete(self.server_url)
+        response.raise_for_status()
 
     def update_auth_value(self, mcp_auth_value: str | dict[str, str]) -> None:
         """

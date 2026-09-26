@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from mcp.shared.message import SessionMessage
 from mcp.types import (
     LATEST_PROTOCOL_VERSION,
+    CallToolRequestParams,
     CallToolResult,
     ErrorData,
     Implementation,
@@ -1934,3 +1935,153 @@ async def test_discovery_auth_fingerprint_tracks_effective_credentials(resolved:
     assert original != replaced
     assert len(original) == 64
     assert "private-original-credential" not in original
+
+
+def _navigate(url: str = "") -> CallToolRequestParams:
+    return CallToolRequestParams(name="navigate", arguments={"url": url} if url else {})
+
+
+def _text(result: CallToolResult) -> str:
+    return " ".join(getattr(item, "text", "") for item in result.content)
+
+
+@pytest.mark.asyncio
+async def test_default_client_initializes_and_terminates_its_backend_session() -> None:
+    from tests.test_litellm.experimental_mcp_client._stateful_mcp_backend import running_backend
+
+    with running_backend() as backend:
+        client: Final = MCPClient(server_url=backend.url, timeout=5)
+        result: Final = await asyncio.wait_for(client.call_tool(_navigate("https://a.test")), timeout=10)
+
+    assert result.isError is False
+    assert backend.rpc_methods()[0] == "initialize"
+    assert client.last_session_id == "sid-1"
+    assert client.last_protocol_version == LATEST_PROTOCOL_VERSION
+    assert backend.deletes() == ["sid-1"]
+
+
+@pytest.mark.asyncio
+async def test_skip_initialize_resumes_the_backend_session_named_in_extra_headers() -> None:
+    from tests.test_litellm.experimental_mcp_client._stateful_mcp_backend import running_backend
+
+    with running_backend() as backend:
+        opener: Final = MCPClient(server_url=backend.url, timeout=5, terminate_on_close=False)
+        await asyncio.wait_for(opener.call_tool(_navigate("https://a.test")), timeout=10)
+        assert opener.last_session_id is not None
+        resumed: Final = MCPClient(
+            server_url=backend.url,
+            timeout=5,
+            skip_initialize=True,
+            terminate_on_close=False,
+            extra_headers={"mcp-session-id": opener.last_session_id, "mcp-protocol-version": "2025-06-18"},
+        )
+        result: Final = await asyncio.wait_for(resumed.call_tool(_navigate()), timeout=10)
+
+    assert result.isError is False
+    assert _text(result) == "https://a.test"
+    assert backend.deletes() == []
+    assert backend.rpc_methods().count("initialize") == 1
+    resumed_requests: Final = [r for r in backend.requests if r.method == "POST"][-2:]
+    assert [r.rpc_method for r in resumed_requests] == ["tools/call", "tools/list"]
+    assert {r.session_id for r in resumed_requests} == {"sid-1"}
+    assert {r.protocol_version for r in resumed_requests} == {"2025-06-18"}
+    assert resumed.last_session_id is None
+
+
+@pytest.mark.asyncio
+async def test_on_session_initialized_runs_after_initialize_and_before_the_tool_call() -> None:
+    from tests.test_litellm.experimental_mcp_client._stateful_mcp_backend import running_backend
+
+    with running_backend() as backend:
+        seen: Final[list[tuple[str | None, str | None, list[str]]]] = []
+
+        async def on_initialized(session_id: str | None, protocol_version: str | None) -> None:
+            seen.append((session_id, protocol_version, backend.rpc_methods()))
+
+        client: Final = MCPClient(
+            server_url=backend.url, timeout=5, terminate_on_close=False, on_session_initialized=on_initialized
+        )
+        result: Final = await asyncio.wait_for(client.call_tool(_navigate("https://a.test")), timeout=10)
+
+    assert result.isError is False
+    assert len(seen) == 1
+    session_id, protocol_version, methods_at_hook = seen[0]
+    assert (session_id, protocol_version) == ("sid-1", LATEST_PROTOCOL_VERSION)
+    assert "initialize" in methods_at_hook
+    assert "tools/call" not in methods_at_hook
+
+
+@pytest.mark.asyncio
+async def test_a_failing_session_hook_aborts_before_the_tool_call_and_reaches_the_caller() -> None:
+    from tests.test_litellm.experimental_mcp_client._stateful_mcp_backend import running_backend
+
+    refusal: Final = RuntimeError("registration refused")
+
+    async def refuse(session_id: str | None, protocol_version: str | None) -> None:
+        raise refusal
+
+    with running_backend() as backend:
+        client: Final = MCPClient(
+            server_url=backend.url, timeout=5, terminate_on_close=False, on_session_initialized=refuse
+        )
+        with pytest.raises(RuntimeError) as caught:
+            await asyncio.wait_for(client.call_tool(_navigate("https://a.test"), raise_on_error=True), timeout=10)
+
+    assert caught.value is refusal
+    assert "tools/call" not in backend.rpc_methods()
+    assert backend.deletes() == []
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_resumed_session_raises_a_readable_http_error_without_hanging() -> None:
+    from tests.test_litellm.experimental_mcp_client._stateful_mcp_backend import running_backend
+
+    with running_backend() as backend:
+        client: Final = MCPClient(
+            server_url=backend.url,
+            timeout=5,
+            skip_initialize=True,
+            terminate_on_close=False,
+            extra_headers={"mcp-session-id": "sid-reaped"},
+        )
+        with pytest.raises(httpx.HTTPStatusError) as caught:
+            await asyncio.wait_for(client.call_tool(_navigate(), raise_on_error=True), timeout=10)
+
+    assert caught.value.response.status_code == 400
+    assert "No valid session ID provided" in caught.value.response.text
+
+
+@pytest.mark.asyncio
+async def test_terminate_session_deletes_with_the_clients_credentials() -> None:
+    from tests.test_litellm.experimental_mcp_client._stateful_mcp_backend import running_backend
+
+    with running_backend() as backend:
+        client: Final = MCPClient(
+            server_url=backend.url, auth_type=MCPAuth.bearer_token, auth_value="backend-token", timeout=5
+        )
+        await client.terminate_session("sid-9")
+
+    assert [(r.method, r.session_id, r.authorization) for r in backend.requests] == [
+        ("DELETE", "sid-9", "Bearer backend-token")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_terminate_session_raises_when_the_backend_refuses() -> None:
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403)
+
+    client: Final = MCPClient(server_url="https://example.com/mcp", timeout=5)
+    with respx.mock:
+        respx.delete("https://example.com/mcp").mock(side_effect=respond)
+        with pytest.raises(httpx.HTTPStatusError):
+            await client.terminate_session("sid-9")
+
+
+@pytest.mark.asyncio
+@patch.object(mcp_client_module, "streamable_http_client")
+async def test_terminate_on_close_reaches_the_sdk_transport(mock_streamable_http_client: MagicMock) -> None:
+    MCPClient(server_url="https://example.com/mcp")._create_transport_context()
+    MCPClient(server_url="https://example.com/mcp", terminate_on_close=False)._create_transport_context()
+
+    assert [c.kwargs["terminate_on_close"] for c in mock_streamable_http_client.call_args_list] == [True, False]
