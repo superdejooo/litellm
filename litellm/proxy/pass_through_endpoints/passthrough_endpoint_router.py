@@ -7,7 +7,11 @@ from litellm._logging import verbose_router_logger
 from litellm.integrations.vector_store_integrations.vector_store_pre_call_hook import (
     LiteLLM_ManagedVectorStore,
 )
-from litellm.litellm_core_utils.credential_accessor import CredentialAccessor
+from litellm.litellm_core_utils.credential_accessor import (
+    CredentialAccessor,
+    is_file_credential_ref,
+    resolve_file_credential,
+)
 from litellm.secret_managers.main import get_secret_str
 from litellm.types.llms.vertex_ai import VERTEX_CREDENTIALS_TYPES
 from litellm.types.passthrough_endpoints.vertex_ai import VertexPassThroughCredentials
@@ -115,7 +119,10 @@ class PassthroughEndpointRouter:
         )
         if deployment_region != region_name:
             return None
-        return _get_str_value(credential_values, "api_key") or litellm_params.get("api_key")
+        credential_api_key: Final = _get_str_value(credential_values, "api_key")
+        if credential_api_key is not None and is_file_credential_ref(credential_api_key):
+            return resolve_file_credential(credential_api_key)
+        return credential_api_key or litellm_params.get("api_key")
 
     def _get_deployment_provider(self, litellm_params: LiteLLMParamsTypedDict) -> str | None:
         model: Final = litellm_params.get("model")

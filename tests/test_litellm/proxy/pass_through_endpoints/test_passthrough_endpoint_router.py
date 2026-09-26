@@ -97,6 +97,33 @@ def test_inline_api_key_resolves_without_credential_name():
     )
 
 
+def test_file_credential_is_resolved_instead_of_returned_verbatim(monkeypatch, tmp_path):
+    from litellm.litellm_core_utils import credential_accessor
+
+    clock = [1000.0]
+    monkeypatch.setattr(credential_accessor, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_TTL_SECONDS", 5.0)
+    key_file = tmp_path / "key"
+    key_file.write_text("sk-ant-key-a\n", encoding="utf-8")
+    CredentialAccessor.upsert_credentials([_credential("cred_file", f"file://{key_file}")])
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[_flagged_deployment("anthropic/claude-fable-5", litellm_credential_name="cred_file")]
+        )
+    )
+
+    assert passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None) == "sk-ant-key-a"
+
+    key_file.write_text("sk-ant-key-b", encoding="utf-8")
+    clock[0] += 6
+    assert passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None) == "sk-ant-key-b"
+
+    key_file.unlink()
+    clock[0] += 6
+    with pytest.raises(ValueError, match="no env fallback"):
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None)
+
+
 def test_missing_credential_and_no_inline_key_falls_back_to_env(monkeypatch):
     llm_router = litellm.Router(
         model_list=[_flagged_deployment("openai/gpt-4o", litellm_credential_name="cred_deleted")]

@@ -13276,3 +13276,58 @@ async def test_token_counter_loads_a_custom_tokenizer_off_the_event_loop(monkeyp
     assert response.tokenizer_type == "huggingface_tokenizer"
     assert response.total_tokens > 0
     assert_loop_stayed_free(took, lags)
+
+
+async def test_token_counter_sends_the_current_file_credential_without_pinning_it_on_the_router(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    import respx
+
+    from litellm import Router
+    from litellm.litellm_core_utils import credential_accessor
+    from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    litellm.in_memory_llm_clients_cache.flush_cache()
+    clock: Final = [1000.0]
+    monkeypatch.setattr(credential_accessor, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_TTL_SECONDS", 5.0)
+    token_file: Final = tmp_path / "token"
+    token_file.write_text("sk-ant-api03-before-swap\n", encoding="utf-8")
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="anthropic_oauth",
+                credential_values={"api_key": f"file://{token_file}"},
+                credential_info={},
+            )
+        ],
+    )
+    router: Final = Router(
+        model_list=[
+            {
+                "model_name": "claude-fable-5",
+                "litellm_params": {"model": "anthropic/claude-fable-5", "litellm_credential_name": "anthropic_oauth"},
+            }
+        ]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", router)
+    request: Final = TokenCountRequest(model="claude-fable-5", messages=[{"role": "user", "content": "hi"}])
+
+    with respx.mock(assert_all_called=True) as upstream:
+        count_tokens: Final = upstream.post("https://api.anthropic.com/v1/messages/count_tokens").mock(
+            return_value=httpx.Response(200, json={"input_tokens": 7})
+        )
+        first: Final = await proxy_server_module.token_counter(request, call_endpoint=True)
+        token_file.write_text("sk-ant-api03-after-swap\n", encoding="utf-8")
+        clock[0] += 6
+        second: Final = await proxy_server_module.token_counter(request, call_endpoint=True)
+
+    assert (first.total_tokens, second.total_tokens) == (7, 7)
+    assert [call.request.headers["x-api-key"] for call in count_tokens.calls] == [
+        "sk-ant-api03-before-swap",
+        "sk-ant-api03-after-swap",
+    ]
+    assert "api_key" not in router.get_model_list()[0]["litellm_params"]

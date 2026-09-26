@@ -1,9 +1,103 @@
 """Utils for accessing credentials."""
 
-from typing import Final
+import os
+from collections.abc import Mapping
+from time import monotonic
+from types import MappingProxyType
+from typing import Final, NamedTuple
 
 import litellm
 from litellm.types.utils import CredentialItem
+
+FILE_CREDENTIAL_SCHEME: Final = "file://"
+_DEFAULT_FILE_CREDENTIAL_TTL_SECONDS: Final = 5.0
+_MAX_FILE_CREDENTIAL_TTL_SECONDS: Final = 3600.0
+
+
+def _parse_file_credential_ttl_seconds(raw: str | None) -> float:
+    try:
+        ttl: Final = float(raw or _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS)
+    except ValueError:
+        return _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS
+    # float() accepts "inf", which would cache a value no file swap ever replaces; NaN fails this check too
+    return ttl if 0 < ttl <= _MAX_FILE_CREDENTIAL_TTL_SECONDS else _DEFAULT_FILE_CREDENTIAL_TTL_SECONDS
+
+
+FILE_CREDENTIAL_TTL_SECONDS: Final = _parse_file_credential_ttl_seconds(os.getenv("FILE_CREDENTIAL_TTL_SECONDS"))
+
+
+class _CachedFileCredential(NamedTuple):
+    expires_at: float
+    value: str
+
+
+_file_credential_cache: Final[dict[str, _CachedFileCredential]] = {}  # mutable-ok: process-wide TTL cache keyed by path
+_file_credential_history: Final[dict[str, frozenset[str]]] = {}  # mutable-ok: every value each path has resolved to
+
+
+def is_file_credential_ref(value: object) -> bool:
+    return isinstance(value, str) and value.startswith(FILE_CREDENTIAL_SCHEME)
+
+
+def resolve_file_credential(ref: str) -> str:
+    """Read a ``file:///abs/path`` credential, cached for FILE_CREDENTIAL_TTL_SECONDS so a swapped file is picked up.
+
+    Raises ValueError when the file is missing, unreadable or empty; the ref itself is never returned.
+    """
+    path: Final = ref.removeprefix(FILE_CREDENTIAL_SCHEME)
+    now: Final = monotonic()
+    cached: Final = _file_credential_cache.get(path)
+    if cached is not None and now < cached.expires_at:
+        return cached.value
+    try:
+        with open(path, encoding="utf-8") as credential_file:
+            value: Final = credential_file.read().strip()
+    except (OSError, UnicodeDecodeError) as e:
+        raise ValueError(
+            f"file credential {path} unreadable ({e}): the credential file must exist and be readable; "
+            "there is no env fallback"
+        ) from e
+    if not value:
+        raise ValueError(
+            f"file credential {path} is empty: refusing to send an empty credential; there is no env fallback"
+        )
+    _file_credential_cache[path] = _CachedFileCredential(expires_at=now + FILE_CREDENTIAL_TTL_SECONDS, value=value)
+    _file_credential_history[path] = _file_credential_history.get(path, frozenset()) | frozenset((value,))
+    return value
+
+
+def was_resolved_from_file_credential(ref: str, value: object) -> bool:
+    """Whether ``value`` is something ``ref`` resolved to earlier, i.e. a copy of it left over from a previous load."""
+    return isinstance(value, str) and value in _file_credential_history.get(
+        ref.removeprefix(FILE_CREDENTIAL_SCHEME), frozenset()
+    )
+
+
+def _should_inject(credential_value: object, current: object) -> bool:
+    return current is None or (
+        isinstance(credential_value, str)
+        and is_file_credential_ref(credential_value)
+        and was_resolved_from_file_credential(credential_value, current)
+    )
+
+
+def _materialize(credential_value: object) -> object:
+    if isinstance(credential_value, str) and is_file_credential_ref(credential_value):
+        return resolve_file_credential(credential_value)
+    return credential_value
+
+
+def credential_values_to_inject(
+    credential_values: Mapping[str, object], request: Mapping[str, object]
+) -> Mapping[str, object]:
+    """The credential values to write into ``request``: keys it lacks or holds as None, and stale ``file://`` copies."""
+    return MappingProxyType(
+        {
+            key: _materialize(value)
+            for key, value in credential_values.items()
+            if _should_inject(value, request.get(key))
+        }
+    )
 
 
 class CredentialAccessor:

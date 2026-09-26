@@ -6601,6 +6601,155 @@ def test_load_credentials_from_list_fills_kwargs_from_the_loaded_credential_with
     assert _credential_warnings(caplog) == []
 
 
+class _FileCredentialClock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+@pytest.fixture
+def file_credential_clock(monkeypatch: pytest.MonkeyPatch) -> _FileCredentialClock:
+    from litellm.litellm_core_utils import credential_accessor
+
+    clock = _FileCredentialClock()
+    monkeypatch.setattr(credential_accessor, "monotonic", clock)
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_TTL_SECONDS", 5.0)
+    return clock
+
+
+def _load_credential(monkeypatch: pytest.MonkeyPatch, credential_values: dict[str, str]) -> None:
+    from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [CredentialItem(credential_name="zai_api", credential_values=credential_values, credential_info={})],
+    )
+
+
+def test_load_credentials_from_list_resolves_a_file_credential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, file_credential_clock: _FileCredentialClock
+) -> None:
+    from litellm.utils import load_credentials_from_list
+
+    key_file = tmp_path / "key"
+    key_file.write_text("  glm-key-from-file\n", encoding="utf-8")
+    _load_credential(monkeypatch, {"api_key": f"file://{key_file}", "api_base": "https://api.z.ai/api/anthropic"})
+    request_kwargs = {"litellm_credential_name": "zai_api"}
+
+    load_credentials_from_list(request_kwargs)
+
+    assert request_kwargs == {
+        "litellm_credential_name": "zai_api",
+        "api_key": "glm-key-from-file",
+        "api_base": "https://api.z.ai/api/anthropic",
+    }
+
+
+@pytest.mark.parametrize("credential_value", ["sk-literal", "file://{key_file}"])
+def test_load_credentials_from_list_fills_a_key_passed_as_none(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, file_credential_clock: _FileCredentialClock, credential_value: str
+) -> None:
+    from litellm.utils import load_credentials_from_list
+
+    key_file = tmp_path / "key"
+    key_file.write_text("sk-literal", encoding="utf-8")
+    _load_credential(monkeypatch, {"api_key": credential_value.format(key_file=key_file)})
+    request_kwargs = {"litellm_credential_name": "zai_api", "api_key": None}
+
+    load_credentials_from_list(request_kwargs)
+
+    assert request_kwargs["api_key"] == "sk-literal"
+
+
+@pytest.mark.parametrize("content", [None, "  \n"])
+def test_load_credentials_from_list_raises_instead_of_sending_the_file_uri(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, file_credential_clock: _FileCredentialClock, content: str | None
+) -> None:
+    from litellm.utils import load_credentials_from_list
+
+    key_file = tmp_path / "key"
+    if content is not None:
+        key_file.write_text(content, encoding="utf-8")
+    _load_credential(monkeypatch, {"api_key": f"file://{key_file}"})
+    request_kwargs = {"litellm_credential_name": "zai_api"}
+
+    with pytest.raises(ValueError, match="no env fallback"):
+        load_credentials_from_list(request_kwargs)
+
+    assert "api_key" not in request_kwargs
+
+
+def test_load_credentials_from_list_keeps_an_explicit_key_over_a_file_credential(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, file_credential_clock: _FileCredentialClock
+) -> None:
+    from litellm.utils import load_credentials_from_list
+
+    _load_credential(monkeypatch, {"api_key": f"file://{tmp_path / 'never-created'}"})
+    request_kwargs = {"litellm_credential_name": "zai_api", "api_key": "sk-explicit-deployment-key"}
+
+    load_credentials_from_list(request_kwargs)
+
+    assert request_kwargs["api_key"] == "sk-explicit-deployment-key"
+
+
+def test_load_credentials_from_list_picks_up_a_swapped_file_on_a_reused_kwargs_dict(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, file_credential_clock: _FileCredentialClock
+) -> None:
+    from litellm.utils import load_credentials_from_list
+
+    key_file = tmp_path / "key"
+    key_file.write_text("glm-key-a", encoding="utf-8")
+    _load_credential(monkeypatch, {"api_key": f"file://{key_file}"})
+    reused_litellm_params = {"litellm_credential_name": "zai_api", "model": "zai/glm-5"}
+
+    load_credentials_from_list(reused_litellm_params)
+    assert reused_litellm_params["api_key"] == "glm-key-a"
+
+    key_file.write_text("glm-key-b", encoding="utf-8")
+    file_credential_clock.now += 6
+    load_credentials_from_list(reused_litellm_params)
+    assert reused_litellm_params["api_key"] == "glm-key-b"
+
+    retry_kwargs_copied_before_the_swap = {"litellm_credential_name": "zai_api", "api_key": "glm-key-a"}
+    load_credentials_from_list(retry_kwargs_copied_before_the_swap)
+    assert retry_kwargs_copied_before_the_swap["api_key"] == "glm-key-b"
+
+
+@pytest.mark.parametrize("credential_value", ["sk-literal", "os.environ/ZAI_API_KEY"])
+def test_load_credentials_from_list_passes_non_file_values_through_verbatim(
+    monkeypatch: pytest.MonkeyPatch, credential_value: str
+) -> None:
+    from litellm.utils import load_credentials_from_list
+
+    _load_credential(monkeypatch, {"api_key": credential_value})
+    request_kwargs = {"litellm_credential_name": "zai_api"}
+
+    load_credentials_from_list(request_kwargs)
+    assert request_kwargs["api_key"] == credential_value
+
+    kept_kwargs = {"litellm_credential_name": "zai_api", "api_key": "sk-explicit"}
+    load_credentials_from_list(kept_kwargs)
+    assert kept_kwargs["api_key"] == "sk-explicit"
+
+
+async def test_acompletion_fails_loudly_when_the_credential_file_is_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, file_credential_clock: _FileCredentialClock
+) -> None:
+    _load_credential(monkeypatch, {"api_key": f"file://{tmp_path / 'absent'}"})
+
+    with pytest.raises(Exception, match="no env fallback"):
+        await litellm.acompletion(
+            model="anthropic/claude-haiku-4-5",
+            messages=[{"role": "user", "content": "hi"}],
+            litellm_credential_name="zai_api",
+            mock_response="must not succeed",
+            num_retries=0,
+        )
+
+
 _MOCK_STREAM_ID: Final = "chatcmpl-mock-stream"
 _ChunkSnapshot = tuple[str, tuple[str | None, ...], Usage | None]
 

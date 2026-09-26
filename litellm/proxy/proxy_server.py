@@ -12986,9 +12986,11 @@ async def token_counter(request: TokenCountRequest, call_endpoint: bool = False)
                 "litellm.proxy.proxy_server.token_counter(): Exception occured while getting deployment"
             )
     if deployment is not None:
-        litellm_model_name = deployment.get("litellm_params", {}).get("model")
+        # The router returns its stored deployment; loading credentials into it pins this call's key on later calls
+        deployment = {**deployment, "litellm_params": {**deployment["litellm_params"]}}  # rebind-ok: per-request copy
+        litellm_model_name = deployment["litellm_params"].get("model")
         model_info = deployment.get("model_info", {})
-        load_credentials_from_list(deployment.get("litellm_params", {}))
+        load_credentials_from_list(deployment["litellm_params"])
         # remove the custom_llm_provider_prefix in the litellm_model_name
         if "/" in litellm_model_name:
             litellm_model_name = litellm_model_name.split("/", 1)[1]

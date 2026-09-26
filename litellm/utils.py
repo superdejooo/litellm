@@ -670,7 +670,11 @@ def get_applied_guardrails(kwargs: dict[str, object]) -> list[str]:
 def load_credentials_from_list(kwargs: dict):
     """
     Updates kwargs with the credentials if credential_name in kwarg
+
+    A ``file://`` credential value is read per call, and replaces a value an earlier call resolved from the same file.
     """
+    from litellm.litellm_core_utils.credential_accessor import credential_values_to_inject
+
     # Access CredentialAccessor via module to trigger lazy loading if needed
     CredentialAccessor: Final = getattr(sys.modules[__name__], "CredentialAccessor")
 
@@ -685,9 +689,7 @@ def load_credentials_from_list(kwargs: dict):
             len(litellm.credential_list),
         )
         return
-    for key, value in credential.credential_values.items():
-        if key not in kwargs:
-            kwargs[key] = value
+    kwargs.update(credential_values_to_inject(credential.credential_values, kwargs))
 
 
 def get_dynamic_callbacks(
