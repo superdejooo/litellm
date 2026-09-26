@@ -263,7 +263,37 @@ class TestGitHubCopilotAuthenticator:
         mock_sleep.assert_not_called()
         mock_print.assert_not_called()
 
-    @pytest.mark.parametrize("flag", [None, "false", ""])
+    @pytest.mark.parametrize("flag", ["1", "true", "TRUE", "Yes", "on", " On "])
+    def test_every_truthy_spelling_disables_interactive_oauth(
+        self, authenticator, monkeypatch, flag
+    ):
+        monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", flag)
+
+        with (
+            patch("builtins.open", side_effect=FileNotFoundError),
+            patch.object(authenticator, "_get_device_code") as mock_get_device_code,
+        ):
+            with pytest.raises(GetAccessTokenError, match="LITELLM_DISABLE_INTERACTIVE_OAUTH"):
+                authenticator.get_access_token()
+
+        mock_get_device_code.assert_not_called()
+
+    @pytest.mark.parametrize("flag", ["2", "enabled", "tru", "y"])
+    def test_unrecognised_interactive_oauth_flag_raises_value_error(
+        self, authenticator, monkeypatch, flag
+    ):
+        monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", flag)
+
+        with (
+            patch("builtins.open", side_effect=FileNotFoundError),
+            patch.object(authenticator, "_get_device_code") as mock_get_device_code,
+        ):
+            with pytest.raises(ValueError, match="LITELLM_DISABLE_INTERACTIVE_OAUTH"):
+                authenticator.get_access_token()
+
+        mock_get_device_code.assert_not_called()
+
+    @pytest.mark.parametrize("flag", [None, "false", "", "0", "No", "OFF", " false "])
     def test_get_access_token_runs_device_flow_when_interactive_oauth_enabled(
         self, authenticator, monkeypatch, flag
     ):

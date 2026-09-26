@@ -136,6 +136,23 @@ def str_to_bool(value: str | None) -> bool | None:
         return None
 
 
+_TRUTHY_ENV_FLAG_VALUES: Final = frozenset(("1", "true", "yes", "on"))
+_FALSY_ENV_FLAG_VALUES: Final = frozenset(("", "0", "false", "no", "off"))
+
+
+def get_strict_env_flag(env_var: str) -> bool:
+    """Read an on/off env var case-insensitively; unset is off, an unrecognised value raises ValueError."""
+    raw: Final = os.getenv(env_var) or ""
+    value: Final = raw.strip().lower()
+    if value in _TRUTHY_ENV_FLAG_VALUES:
+        return True
+    if value in _FALSY_ENV_FLAG_VALUES:
+        return False
+    raise ValueError(
+        f"{env_var} must be one of 1, true, yes, on (enabled) or 0, false, no, off (disabled); got {raw!r}"
+    )
+
+
 def get_secret_str(
     secret_name: str,
     default_value: str | bool | None = None,

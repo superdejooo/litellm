@@ -8,7 +8,7 @@ import httpx
 
 from litellm._logging import verbose_logger
 from litellm.llms.custom_httpx.http_handler import _get_httpx_client
-from litellm.secret_managers.main import str_to_bool
+from litellm.secret_managers.main import get_strict_env_flag
 
 from .common_utils import (
     APIKeyExpiredError,
@@ -332,7 +332,7 @@ class Authenticator:
         )
 
     def _raise_if_interactive_login_disabled(self) -> None:
-        if str_to_bool(os.getenv("LITELLM_DISABLE_INTERACTIVE_OAUTH")) is True:
+        if get_strict_env_flag("LITELLM_DISABLE_INTERACTIVE_OAUTH"):
             raise GetAccessTokenError(
                 message=(
                     f"GitHub Copilot access token not found at {self.access_token_file}, "

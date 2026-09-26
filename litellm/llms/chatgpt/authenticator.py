@@ -10,7 +10,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from litellm._logging import verbose_logger
 from litellm.llms.custom_httpx.http_handler import _get_httpx_client
-from litellm.secret_managers.main import str_to_bool
+from litellm.secret_managers.main import get_strict_env_flag
 
 from .common_utils import (
     CHATGPT_API_BASE,
@@ -153,7 +153,7 @@ class Authenticator:
         return None
 
     def _raise_if_interactive_login_disabled(self) -> None:
-        if str_to_bool(os.getenv("LITELLM_DISABLE_INTERACTIVE_OAUTH")) is True:
+        if get_strict_env_flag("LITELLM_DISABLE_INTERACTIVE_OAUTH"):
             raise GetAccessTokenError(
                 message=(
                     f"ChatGPT OAuth token in {self.auth_file} is missing, expired, or could not be refreshed, "
