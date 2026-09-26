@@ -171,6 +171,61 @@ def test_first_matching_deployment_wins():
     assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) == "sk-first"
 
 
+def test_key_of_deployment_on_another_host_is_not_sent_to_the_target():
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[
+                _flagged_deployment("anthropic/muse-spark", api_base="https://api.meta.ai", api_key="meta-key"),
+                _flagged_deployment("anthropic/claude-fable-5", api_key="sk-ant-real"),
+            ]
+        )
+    )
+
+    assert (
+        passthrough_router.get_credentials(
+            custom_llm_provider="anthropic", region_name=None, target_api_base="https://api.anthropic.com"
+        )
+        == "sk-ant-real"
+    )
+
+
+def test_only_foreign_host_deployment_falls_back_to_env(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-env")
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[
+                _flagged_deployment("anthropic/muse-spark", api_base="https://api.meta.ai/v1", api_key="meta-key")
+            ]
+        )
+    )
+
+    assert (
+        passthrough_router.get_credentials(
+            custom_llm_provider="anthropic", region_name=None, target_api_base="https://api.anthropic.com"
+        )
+        == "sk-ant-env"
+    )
+
+
+def test_deployment_on_the_target_host_matches_regardless_of_path_and_case():
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[
+                _flagged_deployment(
+                    "anthropic/claude-fable-5", api_base="https://API.anthropic.com/v1", api_key="sk-ant-real"
+                )
+            ]
+        )
+    )
+
+    assert (
+        passthrough_router.get_credentials(
+            custom_llm_provider="anthropic", region_name=None, target_api_base="https://api.anthropic.com"
+        )
+        == "sk-ant-real"
+    )
+
+
 def test_assemblyai_region_matching():
     llm_router = litellm.Router(
         model_list=[

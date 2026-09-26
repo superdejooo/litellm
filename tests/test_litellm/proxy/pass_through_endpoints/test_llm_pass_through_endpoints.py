@@ -29,6 +29,7 @@ from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     BaseOpenAIPassThroughHandler,
     RouteChecks,
     _join_url_paths,
+    anthropic_proxy_route,
     azure_proxy_route,
     bedrock_llm_proxy_route,
     bedrock_proxy_route,
@@ -1902,7 +1903,11 @@ class TestLLMPassthroughFactoryProxyRoute:
 
             assert result == "success"
             mock_get_provider.assert_called_once_with(provider=litellm.LlmProviders(LlmProviders.VLLM), model=None)
-            mock_get_creds.assert_called_once_with(custom_llm_provider=LlmProviders.VLLM, region_name=None)
+            mock_get_creds.assert_called_once_with(
+                custom_llm_provider=LlmProviders.VLLM,
+                region_name=None,
+                target_api_base="https://example.com/v1",
+            )
             mock_create_route.assert_called_once_with(
                 endpoint="/chat/completions",
                 target="https://example.com/v1/chat/completions",
@@ -5520,3 +5525,44 @@ class TestOpenRouterPassthroughRoute:
         )
 
         assert create_route.call_args.kwargs["target"] == f"{expected_root}/{endpoint}"
+
+
+@pytest.mark.asyncio
+async def test_anthropic_route_never_sends_a_foreign_host_deployment_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("ANTHROPIC_API_BASE", raising=False)
+    monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(litellm, "credential_list", [])
+    llm_router: Final = litellm.Router(
+        model_list=[
+            {
+                "model_name": "muse-spark",
+                "litellm_params": {
+                    "model": "anthropic/muse-spark",
+                    "api_base": "https://api.meta.ai",
+                    "api_key": "meta-secret-key",
+                    "use_in_pass_through": True,
+                },
+            }
+        ]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
+    monkeypatch.setattr(
+        "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints.is_streaming_request_fn",
+        AsyncMock(return_value=False),
+    )
+    create_route: Final = Mock(return_value=AsyncMock(return_value={"ok": True}))
+    monkeypatch.setattr(
+        "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints.create_pass_through_route",
+        create_route,
+    )
+
+    await anthropic_proxy_route(
+        endpoint="v1/messages",
+        request=MagicMock(spec=Request),
+        fastapi_response=MagicMock(spec=Response),
+        user_api_key_dict=UserAPIKeyAuth(api_key="virtual-key"),
+    )
+
+    assert create_route.call_args.kwargs["target"] == "https://api.anthropic.com/v1/messages"
+    assert "meta-secret-key" not in json.dumps(create_route.call_args.kwargs["custom_headers"])

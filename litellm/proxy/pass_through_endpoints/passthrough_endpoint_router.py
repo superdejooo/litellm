@@ -2,6 +2,8 @@ import json
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Final
 
+import httpx
+
 import litellm
 from litellm._logging import verbose_router_logger
 from litellm.integrations.vector_store_integrations.vector_store_pre_call_hook import (
@@ -32,6 +34,10 @@ def _get_str_value(values: dict[str, object] | None, key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _host(url: str) -> str:
+    return httpx.URL(url).host.lower()
+
+
 def _credential_identity(credentials: VERTEX_CREDENTIALS_TYPES | None) -> str | None:
     """
     A hashable stand-in for a credential, so two deployments can be compared for holding the same one
@@ -58,10 +64,12 @@ class PassthroughEndpointRouter:
         self,
         custom_llm_provider: str,
         region_name: str | None,
+        target_api_base: str | None = None,
     ) -> str | None:
         deployment_api_key: Final = self._get_deployment_api_key(
             custom_llm_provider=custom_llm_provider,
             region_name=region_name,
+            target_api_base=target_api_base,
         )
         if deployment_api_key is not None:
             return deployment_api_key
@@ -77,6 +85,7 @@ class PassthroughEndpointRouter:
         self,
         custom_llm_provider: str,
         region_name: str | None,
+        target_api_base: str | None,
     ) -> str | None:
         llm_router: Final = self.llm_router_getter()
         if llm_router is None:
@@ -91,6 +100,7 @@ class PassthroughEndpointRouter:
                         litellm_params=deployment["litellm_params"],
                         custom_llm_provider=custom_llm_provider,
                         region_name=region_name,
+                        target_api_base=target_api_base,
                     )
                 )
                 is not None
@@ -103,6 +113,7 @@ class PassthroughEndpointRouter:
         litellm_params: LiteLLMParamsTypedDict,
         custom_llm_provider: str,
         region_name: str | None,
+        target_api_base: str | None,
     ) -> str | None:
         if litellm_params.get("use_in_pass_through") is not True:
             return None
@@ -118,6 +129,8 @@ class PassthroughEndpointRouter:
             api_base=api_base,
         )
         if deployment_region != region_name:
+            return None
+        if target_api_base is not None and api_base is not None and _host(api_base) != _host(target_api_base):
             return None
         credential_api_key: Final = _get_str_value(credential_values, "api_key")
         if credential_api_key is not None and is_file_credential_ref(credential_api_key):

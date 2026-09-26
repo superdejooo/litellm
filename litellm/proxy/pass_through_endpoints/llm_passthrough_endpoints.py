@@ -238,6 +238,7 @@ async def llm_passthrough_factory_proxy_route(
     provider_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider=custom_llm_provider,
         region_name=None,
+        target_api_base=base_target_url,
     )
 
     auth_headers: Final = provider_config.validate_environment(
@@ -769,6 +770,7 @@ async def anthropic_proxy_route(
     anthropic_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="anthropic",
         region_name=None,
+        target_api_base=base_target_url,
     )
 
     ## check for streaming
