@@ -2362,7 +2362,9 @@ if MCP_AVAILABLE:
                     if server is not None
                 }
 
-                metadata_dict: Final = litellm_logging_obj.model_call_details.get("metadata")
+                metadata_dict: Final = (litellm_logging_obj.model_call_details.get("litellm_params") or {}).get(
+                    "metadata"
+                )
                 if isinstance(metadata_dict, dict):
                     spend_meta = metadata_dict.get("spend_logs_metadata")
                     if not isinstance(spend_meta, dict):

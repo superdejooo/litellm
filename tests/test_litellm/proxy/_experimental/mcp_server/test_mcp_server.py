@@ -4818,12 +4818,15 @@ async def test_call_mcp_tool_logs_failure_via_post_call_failure_hook():
 
 
 @pytest.mark.asyncio
-async def test_get_tools_from_mcp_servers_logs_list_tools_to_spendlogs_when_enabled():
+async def test_get_tools_from_mcp_servers_logs_list_tools_to_spendlogs_when_enabled(monkeypatch):
     """
     Regression test for 872e5b98...:
-    Ensure list-tools logging path calls `async_success_handler` when enabled.
+    Ensure list-tools logging path calls `async_success_handler` when enabled, and that the
+    per-server counts reach the standard logging payload built from a real Logging object.
     """
     try:
+        import litellm
+        from litellm.proxy._experimental.mcp_server import server as mcp_server_module
         from litellm.proxy._experimental.mcp_server.server import (
             _get_tools_from_mcp_servers,
         )
@@ -4831,6 +4834,10 @@ async def test_get_tools_from_mcp_servers_logs_list_tools_to_spendlogs_when_enab
         from mcp.types import Tool as MCPTool
     except ImportError:
         pytest.skip("MCP server not available")
+
+    monkeypatch.setattr(litellm, "success_callback", [])
+    monkeypatch.setattr(litellm, "_async_success_callback", [])
+    monkeypatch.setattr(litellm, "callbacks", [])
 
     user_auth = UserAPIKeyAuth(api_key="test-key", user_id="test-user")
 
@@ -4848,14 +4855,14 @@ async def test_get_tools_from_mcp_servers_logs_list_tools_to_spendlogs_when_enab
         inputSchema={"type": "object"},
     )
 
-    dummy_logging_obj = MagicMock()
-    dummy_logging_obj.model_call_details = {"metadata": {"spend_logs_metadata": {}}}
-    dummy_logging_obj.async_success_handler = AsyncMock()
-    function_setup_kwargs = {}
+    real_function_setup = mcp_server_module.function_setup
+    captured = {}
 
-    def _capture_function_setup(*_args, **kwargs):
-        function_setup_kwargs.update(kwargs)
-        return dummy_logging_obj, None
+    def _capture_function_setup(*args, **kwargs):
+        captured["kwargs"] = kwargs
+        logging_obj, returned_kwargs = real_function_setup(*args, **kwargs)
+        captured["logging_obj"] = logging_obj
+        return logging_obj, returned_kwargs
 
     with (
         patch(
@@ -4895,11 +4902,13 @@ async def test_get_tools_from_mcp_servers_logs_list_tools_to_spendlogs_when_enab
         )
 
     assert listing.tools == [tool_1]
-    dummy_logging_obj.async_success_handler.assert_awaited_once()
-    assert dummy_logging_obj.async_success_handler.await_args.kwargs["result"] == [tool_1.model_dump(mode="json")]
-    assert function_setup_kwargs["metadata"]["tags"] == ["team-a"]
+    assert captured["kwargs"]["metadata"]["tags"] == ["team-a"]
 
-    spend_meta = dummy_logging_obj.model_call_details["metadata"]["spend_logs_metadata"]
+    payload = captured["logging_obj"].model_call_details["standard_logging_object"]
+    assert payload["call_type"] == "list_mcp_tools"
+    assert payload["response"] == [tool_1.model_dump(mode="json")]
+    spend_meta = payload["metadata"]["spend_logs_metadata"]
+    assert spend_meta["mcp_operation"] == "list_tools"
     assert spend_meta["tool_count_total"] == 1
     assert spend_meta["allowed_server_count"] == 1
     assert spend_meta["per_server_tool_counts"]["server_a"] == 1
