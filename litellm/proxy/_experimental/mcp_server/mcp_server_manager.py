@@ -26,7 +26,7 @@ from collections.abc import (
 )
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, replace
-from functools import lru_cache
+from functools import lru_cache, partial
 from itertools import chain
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Final, Generic, Literal, TypeAlias, TypedDict, TypeVar, cast
@@ -72,6 +72,7 @@ from litellm.proxy._experimental.mcp_server.auth.user_api_key_auth_mcp import (
     MCPServerAccess,
     _is_mcp_admitted_user_subject,
 )
+from litellm.proxy._experimental.mcp_server.backend_session_affinity import BackendSessionAffinity
 from litellm.proxy._experimental.mcp_server.elicitation_handler import (
     MCP_ELICITATION_AVAILABLE,
 )
@@ -1900,7 +1901,9 @@ class MCPServerManager:
         per_user_oauth_token_store: InvalidatableOAuthTokenStore | None = None,
         per_user_token_cache: MCPPerUserTokenCache | None = None,
         discovery_clock: Callable[[], float] = time.monotonic,
+        backend_session_affinity: BackendSessionAffinity | None = None,
     ):
+        self._backend_session_affinity: Final = backend_session_affinity or BackendSessionAffinity()
         self._per_user_oauth_token_store = per_user_oauth_token_store or LazyPerUserOAuthTokenStore(
             self.get_mcp_server_by_id
         )
@@ -5976,6 +5979,36 @@ class MCPServerManager:
 
         stdio_env: Final = self._build_stdio_env(mcp_server, raw_headers)
 
+        call_tool_params: Final = MCPCallToolRequestParams(
+            name=original_tool_name,
+            arguments=arguments,
+        )
+
+        if self._backend_session_affinity.applies(mcp_server):
+
+            async def _call_sticky_tool() -> CallToolResult:
+                async with self._limit_outbound_concurrency(mcp_server):
+                    return await self._backend_session_affinity.call_tool(
+                        server=mcp_server,
+                        user_api_key_auth=user_api_key_auth,
+                        raw_headers=raw_headers,
+                        server_auth_header=server_auth_header,
+                        extra_headers=extra_headers,
+                        params=call_tool_params,
+                        host_progress_callback=host_progress_callback,
+                        create_client=partial(
+                            self._create_mcp_client,
+                            server=mcp_server,
+                            mcp_auth_header=server_auth_header,
+                            stdio_env=stdio_env,
+                            subject_token=subject_token,
+                            user_api_key_auth=user_api_key_auth,
+                        ),
+                    )
+
+            tasks.append(asyncio.create_task(_call_sticky_tool()))
+            return await self._gather_regular_tool_tasks(mcp_server, tasks, proxy_logging_obj)
+
         client: Final = await self._create_mcp_client(
             server=mcp_server,
             mcp_auth_header=server_auth_header,
@@ -5983,11 +6016,6 @@ class MCPServerManager:
             stdio_env=stdio_env,
             subject_token=subject_token,
             user_api_key_auth=user_api_key_auth,
-        )
-
-        call_tool_params: Final = MCPCallToolRequestParams(
-            name=original_tool_name,
-            arguments=arguments,
         )
 
         if _obo_retry_applies(mcp_server, subject_token):
@@ -6058,7 +6086,13 @@ class MCPServerManager:
             tool_call_coro = _call_tool_via_client(client, call_tool_params)
 
         tasks.append(asyncio.create_task(tool_call_coro))
+        result: Final = await self._gather_regular_tool_tasks(mcp_server, tasks, proxy_logging_obj)
+        self._remember_upstream_initialize_instructions(mcp_server, client)
+        return result
 
+    async def _gather_regular_tool_tasks(
+        self, mcp_server: MCPServer, tasks: list, proxy_logging_obj: ProxyLogging | None
+    ) -> CallToolResult:
         _timeout: Final = mcp_server.timeout if mcp_server.timeout is not None else MCP_CLIENT_TIMEOUT
         try:
             mcp_responses: Final = await asyncio.wait_for(asyncio.gather(*tasks), timeout=_timeout)
@@ -6081,10 +6115,7 @@ class MCPServerManager:
         # If proxy_logging_obj is None, the tool call result is at index 0
         # If proxy_logging_obj is not None, the tool call result is at index 1 (after the during hook task)
         result_index: Final = 1 if proxy_logging_obj else 0
-        result: Final = mcp_responses[result_index]
-        self._remember_upstream_initialize_instructions(mcp_server, client)
-
-        return cast(CallToolResult, result)
+        return cast(CallToolResult, mcp_responses[result_index])
 
     def _resolve_mcp_server_for_tool_call(
         self,
