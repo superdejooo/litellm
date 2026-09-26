@@ -7,6 +7,7 @@ import assemblyaiSmallLogo from "../../public/assets/logos/assemblyai_small.png"
 import basetenLogo from "../../public/assets/logos/baseten.svg";
 import bedrockLogo from "../../public/assets/logos/bedrock.svg";
 import cerebrasLogo from "../../public/assets/logos/cerebras.svg";
+import chatgptLogo from "../../public/assets/logos/chatgpt.svg";
 import cloudflareLogo from "../../public/assets/logos/cloudflare.svg";
 import cohereLogo from "../../public/assets/logos/cohere.svg";
 import cometapiLogo from "../../public/assets/logos/cometapi.svg";
@@ -63,7 +64,9 @@ import volcengineLogo from "../../public/assets/logos/volcengine.png";
 import voyageLogo from "../../public/assets/logos/voyage.webp";
 import watsonxLogo from "../../public/assets/logos/watsonx.svg";
 import xaiLogo from "../../public/assets/logos/xai.svg";
+import xiaomiLogo from "../../public/assets/logos/xiaomi.svg";
 import xinferenceLogo from "../../public/assets/logos/xinference.svg";
+import zhipuLogo from "../../public/assets/logos/zhipu.svg";
 
 export enum Providers {
   A2A_Agent = "A2A Agent",
@@ -177,6 +180,7 @@ export enum Providers {
   WATSONX = "Watsonx",
   WATSONX_TEXT = "Watsonx Text",
   xAI = "xAI",
+  XIAOMI_MIMO = "Xiaomi MiMo",
   XINFERENCE = "Xinference",
   ZAI = "Z.AI (Zhipu AI)",
 }
@@ -293,11 +297,14 @@ export const provider_map: Record<string, string> = {
   WATSONX: "watsonx",
   WATSONX_TEXT: "watsonx_text",
   xAI: "xai",
+  XIAOMI_MIMO: "xiaomi_mimo",
   XINFERENCE: "xinference",
   ZAI: "zai",
 };
 
 const standaloneSubproviderSlugs = new Set<string>(["bedrock_mantle"]);
+
+const providerSlugAliases: Readonly<Record<string, string>> = { zhipu: "zai" };
 
 export const providerLogoMap: Partial<Record<Providers, string>> = {
   [Providers.A2A_Agent]: a2aAgentLogo.src,
@@ -316,7 +323,7 @@ export const providerLogoMap: Partial<Record<Providers, string>> = {
   [Providers.BedrockMantle]: bedrockLogo.src,
   [Providers.SageMaker]: bedrockLogo.src,
   [Providers.Cerebras]: cerebrasLogo.src,
-  [Providers.CHATGPT]: openaiSmallLogo.src,
+  [Providers.CHATGPT]: chatgptLogo.src,
   [Providers.CLOUDFLARE]: cloudflareLogo.src,
   [Providers.CODESTRAL]: mistralLogo.src,
   [Providers.Cohere]: cohereLogo.src,
@@ -389,7 +396,9 @@ export const providerLogoMap: Partial<Record<Providers, string>> = {
   [Providers.WATSONX]: watsonxLogo.src,
   [Providers.WATSONX_TEXT]: watsonxLogo.src,
   [Providers.xAI]: xaiLogo.src,
+  [Providers.XIAOMI_MIMO]: xiaomiLogo.src,
   [Providers.XINFERENCE]: xinferenceLogo.src,
+  [Providers.ZAI]: zhipuLogo.src,
 };
 
 export const getProviderLogoAndName = (providerValue: string): { logo: string; displayName: string } => {
@@ -407,9 +416,10 @@ export const getProviderLogoAndName = (providerValue: string): { logo: string; d
   // Resolve by the litellm provider slug (e.g. "bedrock_mantle"); fall back to
   // the enum key (e.g. "BedrockMantle") for callers like the Add Model dropdown
   // that pass the key instead of the slug.
+  const slug = (providerSlugAliases[providerValue.toLowerCase()] ?? providerValue).toLowerCase();
   const enumKey =
-    Object.keys(provider_map).find((key) => provider_map[key].toLowerCase() === providerValue.toLowerCase()) ??
-    Object.keys(provider_map).find((key) => key.toLowerCase() === providerValue.toLowerCase());
+    Object.keys(provider_map).find((key) => provider_map[key].toLowerCase() === slug) ??
+    Object.keys(provider_map).find((key) => key.toLowerCase() === slug);
 
   if (!enumKey) {
     return { logo: "", displayName: providerValue };

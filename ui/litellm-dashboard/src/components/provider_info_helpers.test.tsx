@@ -89,14 +89,33 @@ describe("provider_info_helpers", () => {
       expect(result.logo).toBe(providerLogoMap[Providers.BedrockMantle]);
     });
 
-    it("should map the chatgpt slug and CHATGPT enum key to the ChatGPT Subscription name and OpenAI logo", () => {
+    it("should map the chatgpt slug and CHATGPT enum key to the ChatGPT Subscription name and ChatGPT logo", () => {
       const fromSlug = getProviderLogoAndName("chatgpt");
       expect(fromSlug.displayName).toBe("ChatGPT Subscription");
-      expect(fromSlug.logo).toContain("openai_small");
+      expect(fromSlug.logo).toContain("chatgpt");
+      expect(fromSlug.logo).not.toBe(providerLogoMap[Providers.OpenAI]);
 
       const fromEnumKey = getProviderLogoAndName("CHATGPT");
       expect(fromEnumKey.displayName).toBe("ChatGPT Subscription");
-      expect(fromEnumKey.logo).toContain("openai_small");
+      expect(fromEnumKey.logo).toBe(fromSlug.logo);
+    });
+
+    it("should map the xiaomi_mimo slug and XIAOMI_MIMO enum key to the Xiaomi MiMo name and logo", () => {
+      const fromSlug = getProviderLogoAndName("xiaomi_mimo");
+      expect(fromSlug.displayName).toBe("Xiaomi MiMo");
+      expect(fromSlug.logo).toContain("xiaomi");
+
+      const fromEnumKey = getProviderLogoAndName("XIAOMI_MIMO");
+      expect(fromEnumKey.displayName).toBe("Xiaomi MiMo");
+      expect(fromEnumKey.logo).toBe(fromSlug.logo);
+    });
+
+    it("should resolve the zhipu alias to the Z.AI display name and logo", () => {
+      const zai = getProviderLogoAndName("zai");
+      expect(zai.logo).toContain("zhipu");
+
+      expect(getProviderLogoAndName("zhipu")).toEqual(zai);
+      expect(getProviderLogoAndName("ZHIPU")).toEqual(zai);
     });
 
     it("should handle provider values case-insensitively", () => {
@@ -177,7 +196,6 @@ describe("provider_info_helpers", () => {
         Providers.PG_VECTOR,
         Providers.PREDIBASE,
         Providers.WANDB,
-        Providers.ZAI,
       ];
       const logolessProviders = Object.values(Providers).filter((provider) => !providerLogoMap[provider]);
       expect([...logolessProviders].sort()).toEqual([...knownLogolessProviders].sort());
