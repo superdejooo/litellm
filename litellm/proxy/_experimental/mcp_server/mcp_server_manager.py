@@ -1062,6 +1062,8 @@ def _should_strip_caller_authorization(
       admission credential — a virtual key, an IdP JWT, or an SSO / OIDC /
       session token whose ``api_key`` is ``None`` — and must never reach
       the upstream, so it is stripped regardless of the ``api_key`` value.
+      A client repeating the admission key in both headers is stripped too,
+      mirroring the pass-through arm.
     """
     if mcp_server.auth_type == MCPAuth.oauth2_token_exchange:
         # OBO: the inbound Authorization is the subject token. It is exchanged at the IdP and only the
@@ -1080,7 +1082,9 @@ def _should_strip_caller_authorization(
 
     has_explicit_litellm_admission_header: Final = _has_explicit_litellm_admission_header(raw_headers)
     if mcp_server.is_oauth_delegate:
-        return not has_explicit_litellm_admission_header
+        return not has_explicit_litellm_admission_header or _authorization_is_litellm_admission_credential(
+            raw_headers, user_api_key_auth
+        )
     return _authorization_is_litellm_admission_credential(raw_headers, user_api_key_auth) or (
         user_api_key_auth is None and not has_explicit_litellm_admission_header
     )

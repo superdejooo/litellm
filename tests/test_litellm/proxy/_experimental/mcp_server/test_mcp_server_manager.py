@@ -3436,6 +3436,41 @@ class TestMCPServerManager:
             is True
         )
 
+    def test_should_strip_authorization_for_oauth_delegate_repeating_admission_key(self):
+        """A client that repeats its LiteLLM key in both x-litellm-api-key and Authorization must not
+        leak that key upstream as the delegated bearer, mirroring the pass-through arm"""
+        from litellm.proxy._types import UserAPIKeyAuth
+
+        oauth_delegate = MCPServer(
+            server_id="od-dup",
+            name="od",
+            url="https://example.com",
+            transport=MCPTransport.http,
+            auth_type=MCPAuth.oauth_delegate,
+        )
+        assert (
+            _should_strip_caller_authorization(
+                mcp_server=oauth_delegate,
+                raw_headers={
+                    "x-litellm-api-key": "sk-litellm-key",
+                    "Authorization": "Bearer sk-litellm-key",
+                },
+                user_api_key_auth=UserAPIKeyAuth(api_key="sk-litellm-key"),
+            )
+            is True
+        )
+        assert (
+            _should_strip_caller_authorization(
+                mcp_server=oauth_delegate,
+                raw_headers={
+                    "x-litellm-api-key": "sk-litellm-key",
+                    "Authorization": "Bearer upstream-oauth-token",
+                },
+                user_api_key_auth=UserAPIKeyAuth(api_key="sk-litellm-key"),
+            )
+            is False
+        )
+
     def test_should_strip_authorization_for_oauth_delegate_admitted_via_jwt_without_api_key(self):
         """JWT / SSO / OIDC / session admission yields a UserAPIKeyAuth with a user_id but
         api_key=None; the caller's Authorization was that credential and must be stripped for
