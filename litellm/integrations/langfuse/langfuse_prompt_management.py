@@ -353,3 +353,19 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
 
             verbose_logger.exception("Langfuse Layer Error - Exception occurred while logging failure event: %s", e)
             self.handle_callback_failure(callback_name="langfuse")
+
+
+class LangfusePromptOnlyManagement(LangfusePromptManagement):
+    """Langfuse prompt manager built from a `prompts:` entry; renders prompts and never emits native traces."""
+
+    def log_success_event(self, kwargs, response_obj, start_time, end_time):
+        return None
+
+    def log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        return None
+
+    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        return None
+
+    async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        return None
