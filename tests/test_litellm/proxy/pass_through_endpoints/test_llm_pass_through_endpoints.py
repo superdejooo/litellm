@@ -2405,6 +2405,66 @@ class TestForwardHeaders:
             assert "host" not in sent_headers
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("credential_header", ["authorization", "x-api-key", "x-litellm-api-key"])
+    async def test_forwarded_headers_never_carry_the_callers_litellm_key(
+        self, monkeypatch: pytest.MonkeyPatch, credential_header: str
+    ) -> None:
+        from litellm.proxy.pass_through_endpoints.pass_through_endpoints import pass_through_request
+
+        monkeypatch.setattr("litellm.proxy.proxy_server.master_key", None)
+        caller_key: Final = "sk-caller-virtual-key"
+        caller_value: Final = f"Bearer {caller_key}" if credential_header == "authorization" else caller_key
+        request: Final = MagicMock(spec=Request)
+        request.state = None
+        request.method = "POST"
+        request.url = MagicMock()
+        request.url.path = "/anthropic/v1/messages"
+        request.headers = {
+            credential_header: caller_value,
+            "x-litellm-api-key": caller_key,
+            "anthropic-version": "2023-06-01",
+            **({} if credential_header == "x-api-key" else {"x-api-key": "sk-ant-caller-own-provider-key"}),
+        }
+        request.query_params = {}
+        upstream_response: Final = MagicMock()
+        upstream_response.status_code = 200
+        upstream_response.headers = {"content-type": "application/json"}
+        upstream_response.aread = AsyncMock(return_value=b"{}")
+        client: Final = MagicMock()
+        client.build_request = MagicMock(return_value=MagicMock())
+        client.send = AsyncMock(return_value=upstream_response)
+
+        with (
+            patch(
+                "litellm.proxy.pass_through_endpoints.pass_through_endpoints._read_request_body",
+                return_value={},
+            ),
+            patch(
+                "litellm.proxy.pass_through_endpoints.pass_through_endpoints.get_async_httpx_client",
+                return_value=SimpleNamespace(client=client),
+            ),
+            patch("litellm.proxy.proxy_server.proxy_logging_obj") as logging_obj,
+        ):
+            logging_obj.pre_call_hook = AsyncMock(return_value={})
+            logging_obj.post_call_success_hook = AsyncMock()
+            logging_obj.post_call_failure_hook = AsyncMock()
+            logging_obj.post_call_response_headers_hook = AsyncMock(return_value={})
+            await pass_through_request(
+                request=request,
+                target="https://api.anthropic.com/v1/messages",
+                custom_headers={},
+                user_api_key_dict=UserAPIKeyAuth(api_key=caller_key),
+                forward_headers=True,
+                stream=False,
+            )
+
+        sent_headers: Final = client.build_request.call_args.kwargs["headers"]
+        assert caller_key not in json.dumps(sent_headers)
+        assert sent_headers["anthropic-version"] == "2023-06-01"
+        if credential_header != "x-api-key":
+            assert sent_headers["x-api-key"] == "sk-ant-caller-own-provider-key"
+
+    @pytest.mark.asyncio
     async def test_pass_through_request_with_forward_headers_false(self):
         """
         Test that when forward_headers=False (default), user headers are NOT forwarded,

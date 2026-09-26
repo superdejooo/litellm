@@ -66,6 +66,7 @@ from litellm.proxy._types import (
     PassThroughEndpointResponse,
     PassThroughGenericEndpoint,
     ProxyException,
+    SpecialHeaders,
     UserAPIKeyAuth,
 )
 from litellm.proxy.auth.auth_utils import request_dispatched_to_pass_through_endpoint
@@ -911,6 +912,24 @@ from litellm.passthrough.timeout_utils import (
 )
 
 
+def _caller_headers_to_forward(request: Request, user_api_key_dict: UserAPIKeyAuth) -> dict[str, str]:
+    """The caller's headers minus the LiteLLM credential that authenticated them."""
+    from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
+        _MAPPED_ROUTE_CALLER_KEY_HEADER,
+        _is_authenticated_caller_secret,
+        _operator_configured_caller_key_header_names,
+    )
+
+    never_forwarded: Final = frozenset(
+        (SpecialHeaders.custom_litellm_api_key.value.lower(), _MAPPED_ROUTE_CALLER_KEY_HEADER)
+    ).union(_operator_configured_caller_key_header_names())
+    return {
+        name: value
+        for name, value in _safe_get_request_headers(request).items()
+        if name.lower() not in never_forwarded and not _is_authenticated_caller_secret(value, user_api_key_dict)
+    }
+
+
 async def pass_through_request(
     request: Request,
     target: str,
@@ -974,7 +993,11 @@ async def pass_through_request(
         url = httpx.URL(target)
         headers = custom_headers
         headers = HttpPassThroughEndpointHelpers.forward_headers_from_request(
-            request_headers=_safe_get_request_headers(request).copy(),
+            request_headers=(
+                _caller_headers_to_forward(request, user_api_key_dict)
+                if forward_headers is True
+                else _safe_get_request_headers(request).copy()
+            ),
             headers=headers,
             forward_headers=forward_headers,
         )
