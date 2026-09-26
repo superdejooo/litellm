@@ -3,7 +3,12 @@
 import { useLogin } from "@/app/(dashboard)/hooks/login/useLogin";
 import { useUIConfig } from "@/app/(dashboard)/hooks/uiConfig/useUIConfig";
 import LoadingScreen from "@/components/common_components/LoadingScreen";
-import { exchangeLoginCode, getProxyBaseUrl, switchToWorkerUrl } from "@/components/networking";
+import {
+  exchangeLoginCode,
+  getProxyBaseUrl,
+  LiteLLMWellKnownUiConfig,
+  switchToWorkerUrl,
+} from "@/components/networking";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/shared/Alert";
 import { PasswordInput } from "@/components/shared/PasswordInput";
 import { Field, FieldGroup, FieldLabel } from "@/components/ui/field";
@@ -14,6 +19,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { UiLoadingSpinner } from "@/components/ui/ui-loading-spinner";
+import { cn } from "@/lib/cva.config";
 import { useZodForm } from "@/lib/forms/useZodForm";
 import { clearTokenCookies, getCookieFromDocument } from "@/utils/cookieUtils";
 import { isJwtExpired } from "@/utils/jwtUtils";
@@ -30,6 +36,29 @@ const loginSchema = z.object({
 });
 
 type LoginFormValues = z.infer<typeof loginSchema>;
+
+const DEFAULT_PRODUCT_NAME = "LiteLLM";
+const LOGIN_LOGO_CLASS_NAME = "mx-auto h-auto max-h-16 w-auto max-w-full object-contain";
+
+const getProductName = (uiConfig: LiteLLMWellKnownUiConfig | undefined): string =>
+  uiConfig?.ui_product_name || DEFAULT_PRODUCT_NAME;
+
+function LoginBrand({ productName }: { productName: string }) {
+  const logoUrl = `${getProxyBaseUrl()}/get_image`;
+
+  return (
+    <div className="flex flex-col items-center gap-3 text-center">
+      <img src={logoUrl} alt={`${productName} logo`} className={cn(LOGIN_LOGO_CLASS_NAME, "dark:hidden")} />
+      <img
+        src={`${logoUrl}?theme=dark`}
+        alt=""
+        aria-hidden
+        className={cn(LOGIN_LOGO_CLASS_NAME, "hidden dark:block")}
+      />
+      <h2 className="text-3xl font-semibold text-foreground">{productName}</h2>
+    </div>
+  );
+}
 
 function SsoEnabledNotice() {
   const [dismissed, setDismissed] = useState(false);
@@ -179,6 +208,7 @@ function LoginPageContent() {
 
   const error = loginMutation.error instanceof Error ? loginMutation.error.message : null;
   const isLoginLoading = loginMutation.isPending;
+  const productName = getProductName(uiConfig);
 
   if (isConfigLoading || isLoading) {
     return <LoadingScreen />;
@@ -191,9 +221,7 @@ function LoginPageContent() {
         <Card className="w-full max-w-lg shadow-md">
           <CardContent>
             <div className="flex w-full flex-col gap-4">
-              <div className="text-center">
-                <h2 className="text-3xl font-semibold text-foreground">🚅 LiteLLM</h2>
-              </div>
+              <LoginBrand productName={productName} />
 
               <Alert variant="warning">
                 <TriangleAlert />
@@ -221,13 +249,11 @@ function LoginPageContent() {
         <CardContent>
           <TooltipProvider>
             <div className="flex w-full flex-col gap-4">
-              <div className="text-center">
-                <h2 className="text-3xl font-semibold text-foreground">🚅 LiteLLM</h2>
-              </div>
+              <LoginBrand productName={productName} />
 
               <div className="text-center">
                 <h3 className="text-2xl font-semibold text-foreground">Login</h3>
-                <p className="text-sm text-muted-foreground">Access your LiteLLM Admin UI.</p>
+                <p className="text-sm text-muted-foreground">Access your {productName} Admin UI.</p>
               </div>
 
               {!uiConfig?.hide_default_credentials_hint && (

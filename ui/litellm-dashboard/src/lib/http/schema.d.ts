@@ -38023,6 +38023,11 @@ export interface components {
             /** Sso Configured */
             sso_configured: boolean;
             /**
+             * Ui Product Name
+             * @default LiteLLM
+             */
+            ui_product_name: string;
+            /**
              * Workers
              * @default []
              */

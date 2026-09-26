@@ -12,3 +12,4 @@ class UiDiscoveryEndpoints(BaseModel):
     hide_default_credentials_hint: bool = False
     is_control_plane: bool = False
     workers: list[WorkerRegistryEntry] = []
+    ui_product_name: str = "LiteLLM"

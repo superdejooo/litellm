@@ -43,4 +43,5 @@ async def get_ui_config():
         hide_default_credentials_hint=hide_default_credentials_hint,
         is_control_plane=is_control_plane,
         workers=proxy_config.worker_registry if is_control_plane else [],
+        ui_product_name=os.getenv("UI_PRODUCT_NAME", "").strip() or "LiteLLM",
     )

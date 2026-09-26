@@ -98,6 +98,57 @@ describe("LoginPage", () => {
     });
   });
 
+  it("should brand the page with the proxy logo and LiteLLM when no product name is configured", async () => {
+    (useUIConfig as ReturnType<typeof vi.fn>).mockReturnValue({
+      data: {
+        auto_redirect_to_sso: false,
+        server_root_path: "/",
+        proxy_base_url: null,
+        sso_configured: false,
+      },
+      isLoading: false,
+    });
+    (getCookieFromDocument as ReturnType<typeof vi.fn>).mockReturnValue(null);
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <LoginPage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "LiteLLM" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "LiteLLM logo" })).toHaveAttribute("src", "http://localhost:4000/get_image");
+    expect(screen.getByText("Access your LiteLLM Admin UI.")).toBeInTheDocument();
+  });
+
+  it("should use the configured ui_product_name for the heading, logo label and subtitle", async () => {
+    (useUIConfig as ReturnType<typeof vi.fn>).mockReturnValue({
+      data: {
+        auto_redirect_to_sso: false,
+        server_root_path: "/",
+        proxy_base_url: null,
+        sso_configured: false,
+        ui_product_name: "Acme Gateway",
+      },
+      isLoading: false,
+    });
+    (getCookieFromDocument as ReturnType<typeof vi.fn>).mockReturnValue(null);
+
+    render(
+      <QueryClientProvider client={createQueryClient()}>
+        <LoginPage />
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByRole("heading", { name: "Acme Gateway" })).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Acme Gateway logo" })).toHaveAttribute(
+      "src",
+      "http://localhost:4000/get_image",
+    );
+    expect(screen.getByText("Access your Acme Gateway Admin UI.")).toBeInTheDocument();
+    expect(screen.queryByText(/LiteLLM Admin UI/)).not.toBeInTheDocument();
+  });
+
   it("should call router.replace to dashboard when jwt is valid", async () => {
     const validToken = "valid-token";
     (useUIConfig as ReturnType<typeof vi.fn>).mockReturnValue({
@@ -214,6 +265,7 @@ describe("LoginPage", () => {
         server_root_path: "/",
         proxy_base_url: null,
         sso_configured: false,
+        ui_product_name: "Acme Gateway",
       },
       isLoading: false,
     });
@@ -230,6 +282,7 @@ describe("LoginPage", () => {
       expect(screen.getByRole("alert")).toBeInTheDocument();
       expect(screen.getByText("Admin UI Disabled")).toBeInTheDocument();
     });
+    expect(screen.getByRole("heading", { name: "Acme Gateway" })).toBeInTheDocument();
 
     expect(mockPush).not.toHaveBeenCalled();
     expect(mockReplace).not.toHaveBeenCalled();

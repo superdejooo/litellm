@@ -400,6 +400,31 @@ def test_ui_discovery_endpoints_hide_default_credentials_hint_via_general_settin
         assert data["hide_default_credentials_hint"] is True
 
 
+@pytest.mark.parametrize(
+    ("env_value", "expected"),
+    [(None, "LiteLLM"), ("", "LiteLLM"), ("   ", "LiteLLM"), (" Acme Gateway ", "Acme Gateway")],
+)
+def test_ui_discovery_endpoints_ui_product_name(env_value, expected):
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    with (
+        patch("litellm.proxy.utils.get_server_root_path", return_value="/"),
+        patch("litellm.proxy.utils.get_proxy_base_url", return_value=None),
+        patch("litellm.proxy.auth.auth_utils.has_user_setup_sso", return_value=False),
+        patch.dict(os.environ, {"DISABLE_ADMIN_UI": "false"}, clear=False),
+    ):
+        os.environ.pop("UI_PRODUCT_NAME", None)
+        if env_value is not None:
+            os.environ["UI_PRODUCT_NAME"] = env_value
+
+        response = client.get("/.well-known/litellm-ui-config")
+
+        assert response.status_code == 200
+        assert response.json()["ui_product_name"] == expected
+
+
 def test_ui_discovery_endpoints_is_control_plane_false_when_no_workers():
     app = FastAPI()
     app.include_router(router)

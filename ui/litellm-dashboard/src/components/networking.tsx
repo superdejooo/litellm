@@ -363,6 +363,7 @@ export interface LiteLLMWellKnownUiConfig {
   hide_default_credentials_hint?: boolean;
   is_control_plane?: boolean;
   workers?: WorkerInfo[];
+  ui_product_name?: string;
 }
 
 export interface CredentialsResponse {
