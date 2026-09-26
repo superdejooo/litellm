@@ -1120,6 +1120,20 @@ class TestLostRace:
         assert factory.terminated == [(SERVER_URL, "loser-1")]
 
     @pytest.mark.asyncio
+    async def test_a_winner_that_vanished_is_a_lost_race_not_a_store_outage(self, log_messages: list[str]) -> None:
+        """SET NX lost and the winner's ref is unusable by the time it is read back: the store answered
+        every request, so reporting it as down would send operators after a healthy Redis."""
+        redis: Final = RaceRedis("not-json")
+        factory: Final = Factory([FakeClient(sid="loser-1")])
+        result: Final = await call_sticky(make_affinity(redis), factory)
+        await settle()
+        assert result.isError is True
+        assert LOST_RACE in text_of(result)
+        assert STORE_DOWN not in text_of(result)
+        assert factory.terminated == [(SERVER_URL, "loser-1")]
+        assert any("lost the session registration race" in m for m in log_messages), log_messages
+
+    @pytest.mark.asyncio
     async def test_no_third_client_when_the_winner_is_also_dead(self) -> None:
         redis: Final = RaceRedis(json.dumps({"sid": "winner-1"}))
         factory: Final = Factory(

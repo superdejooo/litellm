@@ -568,9 +568,14 @@ class BackendSessionAffinity:
                 "or misconfigured for sticky routing",
             )
         self._terminate_in_background(client)
-        if refused.winner is None:
+        if refused.marker == _STICKY_STORE_DOWN_MARKER:
             return sticky_error_result(_STICKY_STORE_DOWN_MARKER, call.key)
         # One gateway call never builds a third client; the tool has not run on either attempt.
-        if not allow_race_resume:
+        if refused.winner is None or not allow_race_resume:
+            verbose_logger.warning(
+                "mcp sticky: %s lost the session registration race and cannot resume the winner (%s)",
+                call.key,
+                "its ref is already gone" if refused.winner is None else "this call already replaced a dead session",
+            )
             return sticky_error_result(_STICKY_LOST_RACE_MARKER, call.key)
         return _tool_result(await self._resume(call, refused.winner))
