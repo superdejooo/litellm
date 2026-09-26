@@ -7773,7 +7773,10 @@ def test_pass_through_deployment_api_key_resolves_via_get_credentials():
     assert len(router.get_model_list()) == 2
     assert (
         passthrough_router.get_credentials(
-            custom_llm_provider="openai", region_name=None
+            custom_llm_provider="openai",
+            region_name=None,
+            target_api_base="https://api.openai.com/",
+            provider_default_api_base="https://api.openai.com/",
         )
         == "sk-fake-for-tests"
     )

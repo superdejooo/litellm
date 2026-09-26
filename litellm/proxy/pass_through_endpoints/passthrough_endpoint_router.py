@@ -1,6 +1,7 @@
 import json
 from collections.abc import Callable
-from typing import TYPE_CHECKING, Final
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Final, NamedTuple
 
 import httpx
 
@@ -34,8 +35,30 @@ def _get_str_value(values: dict[str, object] | None, key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _host(url: str) -> str:
-    return httpx.URL(url).host.lower()
+_DEFAULT_PORTS: Final = MappingProxyType({"http": 80, "https": 443})
+
+
+class _Origin(NamedTuple):
+    scheme: str
+    host: str
+    port: int | None
+
+    def __str__(self) -> str:
+        return f"{self.scheme}://{self.host}:{self.port}"
+
+
+def _origin(url: str) -> _Origin | None:
+    try:
+        parsed: Final = httpx.URL(url)
+    except httpx.InvalidURL:
+        return None
+    if not parsed.host:
+        return None
+    return _Origin(
+        scheme=parsed.scheme.lower(),
+        host=parsed.host.lower(),
+        port=parsed.port or _DEFAULT_PORTS.get(parsed.scheme.lower()),
+    )
 
 
 def _credential_identity(credentials: VERTEX_CREDENTIALS_TYPES | None) -> str | None:
@@ -64,12 +87,20 @@ class PassthroughEndpointRouter:
         self,
         custom_llm_provider: str,
         region_name: str | None,
-        target_api_base: str | None = None,
+        *,
+        target_api_base: str,
+        provider_default_api_base: str,
     ) -> str | None:
+        """
+        The key to send to ``target_api_base``: the first flagged deployment whose base has the target's origin wins.
+
+        ``provider_default_api_base`` is the base a deployment without an api_base sends its key to.
+        """
         deployment_api_key: Final = self._get_deployment_api_key(
             custom_llm_provider=custom_llm_provider,
             region_name=region_name,
-            target_api_base=target_api_base,
+            target_origin=_origin(target_api_base),
+            provider_default_api_base=provider_default_api_base,
         )
         if deployment_api_key is not None:
             return deployment_api_key
@@ -85,7 +116,8 @@ class PassthroughEndpointRouter:
         self,
         custom_llm_provider: str,
         region_name: str | None,
-        target_api_base: str | None,
+        target_origin: _Origin | None,
+        provider_default_api_base: str,
     ) -> str | None:
         llm_router: Final = self.llm_router_getter()
         if llm_router is None:
@@ -100,7 +132,8 @@ class PassthroughEndpointRouter:
                         litellm_params=deployment["litellm_params"],
                         custom_llm_provider=custom_llm_provider,
                         region_name=region_name,
-                        target_api_base=target_api_base,
+                        target_origin=target_origin,
+                        provider_default_api_base=provider_default_api_base,
                     )
                 )
                 is not None
@@ -113,7 +146,8 @@ class PassthroughEndpointRouter:
         litellm_params: LiteLLMParamsTypedDict,
         custom_llm_provider: str,
         region_name: str | None,
-        target_api_base: str | None,
+        target_origin: _Origin | None,
+        provider_default_api_base: str,
     ) -> str | None:
         if litellm_params.get("use_in_pass_through") is not True:
             return None
@@ -130,7 +164,20 @@ class PassthroughEndpointRouter:
         )
         if deployment_region != region_name:
             return None
-        if target_api_base is not None and api_base is not None and _host(api_base) != _host(target_api_base):
+        model: Final = litellm_params.get("model")
+        deployment_origin: Final = _origin(api_base or provider_default_api_base)
+        if deployment_origin is None:
+            verbose_router_logger.warning(
+                "Pass-through route skips deployment %s: its api_base is not a valid absolute URL", model
+            )
+            return None
+        if deployment_origin != target_origin:
+            verbose_router_logger.warning(
+                "Pass-through route skips deployment %s: its key belongs to %s, not to the route target %s",
+                model,
+                deployment_origin,
+                target_origin,
+            )
             return None
         credential_api_key: Final = _get_str_value(credential_values, "api_key")
         if credential_api_key is not None and is_file_credential_ref(credential_api_key):

@@ -36,12 +36,6 @@ class AssemblyAITranscriptResponse(TypedDict, total=False):
 
 class AssemblyAIPassthroughLoggingHandler:
     def __init__(self):
-        self.assembly_ai_base_url = "https://api.assemblyai.com"
-        self.assembly_ai_eu_base_url = "https://eu.assemblyai.com"
-        """
-        The base URL for the AssemblyAI API
-        """
-
         self.polling_interval: float = ASSEMBLY_AI_POLLING_INTERVAL
         """
         The polling interval for the AssemblyAI API. 
@@ -181,10 +175,12 @@ class AssemblyAIPassthroughLoggingHandler:
             passthrough_endpoint_router,
         )
 
-        _base_url: Final = self.assembly_ai_eu_base_url if request_region == "eu" else self.assembly_ai_base_url
+        _base_url: Final = self._get_assembly_base_url_from_region(region=request_region)
         _api_key: Final = passthrough_endpoint_router.get_credentials(
             custom_llm_provider="assemblyai",
             region_name=request_region,
+            target_api_base=_base_url,
+            provider_default_api_base=self._get_assembly_base_url_from_region(region=None),
         )
         if _api_key is None:
             raise ValueError("AssemblyAI API key not found")

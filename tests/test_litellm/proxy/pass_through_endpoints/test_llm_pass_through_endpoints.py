@@ -30,11 +30,14 @@ from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     RouteChecks,
     _join_url_paths,
     anthropic_proxy_route,
+    assemblyai_proxy_route,
     azure_proxy_route,
     bedrock_llm_proxy_route,
     bedrock_proxy_route,
+    cohere_proxy_route,
     create_pass_through_route,
     cursor_proxy_route,
+    gemini_proxy_route,
     get_azure_ai_search_index_from_endpoint,
     get_vertex_base_url,
     is_azure_ai_search_service_level_index_create,
@@ -1907,6 +1910,7 @@ class TestLLMPassthroughFactoryProxyRoute:
                 custom_llm_provider=LlmProviders.VLLM,
                 region_name=None,
                 target_api_base="https://example.com/v1",
+                provider_default_api_base="https://example.com/v1",
             )
             mock_create_route.assert_called_once_with(
                 endpoint="/chat/completions",
@@ -5566,3 +5570,144 @@ async def test_anthropic_route_never_sends_a_foreign_host_deployment_key(monkeyp
 
     assert create_route.call_args.kwargs["target"] == "https://api.anthropic.com/v1/messages"
     assert "meta-secret-key" not in json.dumps(create_route.call_args.kwargs["custom_headers"])
+
+
+_FOREIGN_DEPLOYMENT_KEY: Final = "foreign-deployment-secret"
+_ENV_PROVIDER_KEY: Final = "env-provider-key"
+_PROVIDER_BASE_ENV_VARS: Final = (
+    "OPENAI_API_BASE",
+    "COHERE_API_BASE",
+    "MISTRAL_API_BASE",
+    "GEMINI_API_BASE",
+    "OPENROUTER_API_BASE",
+    "CURSOR_API_BASE",
+    "ANTHROPIC_API_BASE",
+    "ANTHROPIC_BASE_URL",
+    "AZURE_API_BASE",
+)
+
+
+def _key_forms(key: str) -> tuple[str, str]:
+    return key, base64.b64encode(f"{key}:".encode()).decode()
+
+
+def _route_passthrough_calls(monkeypatch: pytest.MonkeyPatch, deployments: list[dict]) -> tuple[Mock, AsyncMock]:
+    for name in _PROVIDER_BASE_ENV_VARS:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(litellm, "credential_list", [])
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", litellm.Router(model_list=deployments))
+    module: Final = "litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints"
+    monkeypatch.setattr(f"{module}.is_streaming_request_fn", AsyncMock(return_value=False))
+    monkeypatch.setattr(f"{module}.user_api_key_auth", AsyncMock(return_value=UserAPIKeyAuth(api_key="virtual-key")))
+    create_route: Final = Mock(return_value=AsyncMock(return_value={"ok": True}))
+    monkeypatch.setattr(f"{module}.create_pass_through_route", create_route)
+    openai_handler: Final = AsyncMock(return_value={"ok": True})
+    monkeypatch.setattr(BaseOpenAIPassThroughHandler, "_base_openai_pass_through_handler", openai_handler)
+    return create_route, openai_handler
+
+
+def _passthrough_request() -> MagicMock:
+    request: Final = MagicMock(spec=Request)
+    request.method = "GET"
+    request.url = "http://localhost:4000/pass-through"
+    request.query_params = {}
+    request.headers = {}
+    return request
+
+
+def _flagged(model: str, api_key: str, **litellm_params: str) -> dict:
+    return {
+        "model_name": model.split("/", 1)[-1],
+        "litellm_params": {"model": model, "api_key": api_key, "use_in_pass_through": True, **litellm_params},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route, model, env_key_name, takes_user_api_key_dict",
+    [
+        (openai_proxy_route, "openai/deepseek-chat", "OPENAI_API_KEY", True),
+        (cohere_proxy_route, "cohere/embed-english-v3.0", "COHERE_API_KEY", True),
+        (mistral_proxy_route, "mistral/mistral-large-latest", "MISTRAL_API_KEY", True),
+        (gemini_proxy_route, "gemini/gemini-2.5-pro", "GEMINI_API_KEY", False),
+        (openrouter_proxy_route, "openrouter/openai/gpt-4o", "OPENROUTER_API_KEY", True),
+        (cursor_proxy_route, "cursor/agent", "CURSOR_API_KEY", True),
+        (azure_proxy_route, "azure/gpt-4o", "AZURE_API_KEY", True),
+        (assemblyai_proxy_route, "assemblyai/best", "ASSEMBLYAI_API_KEY", True),
+        (anthropic_proxy_route, "anthropic/muse-spark", "ANTHROPIC_API_KEY", True),
+    ],
+)
+async def test_every_provider_route_keeps_a_foreign_host_deployment_key_off_its_target(
+    monkeypatch: pytest.MonkeyPatch, route, model: str, env_key_name: str, takes_user_api_key_dict: bool
+) -> None:
+    create_route, openai_handler = _route_passthrough_calls(
+        monkeypatch,
+        [_flagged(model, _FOREIGN_DEPLOYMENT_KEY, api_base="https://foreign.example.com")],
+    )
+    monkeypatch.setenv("AZURE_API_BASE", "https://mine.openai.azure.com")
+    monkeypatch.setenv(env_key_name, _ENV_PROVIDER_KEY)
+    user_api_key_kwargs: Final = (
+        {"user_api_key_dict": UserAPIKeyAuth(api_key="virtual-key")} if takes_user_api_key_dict else {}
+    )
+
+    await route(
+        endpoint="models",
+        request=_passthrough_request(),
+        fastapi_response=MagicMock(spec=Response),
+        **user_api_key_kwargs,
+    )
+
+    forwarded: Final = repr((create_route.call_args_list, openai_handler.call_args_list))
+    assert not any(form in forwarded for form in _key_forms(_FOREIGN_DEPLOYMENT_KEY))
+    assert any(form in forwarded for form in _key_forms(_ENV_PROVIDER_KEY))
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "anthropic_api_base, deployment_api_base",
+    [
+        ("https://api.minimax.io/anthropic", None),
+        ("http://api.anthropic.com", "https://api.anthropic.com"),
+        ("https://api.anthropic.com:8443", "https://api.anthropic.com"),
+    ],
+)
+async def test_anthropic_route_sends_a_deployment_key_only_to_its_own_origin(
+    monkeypatch: pytest.MonkeyPatch, anthropic_api_base: str, deployment_api_base: str | None
+) -> None:
+    api_base_param: Final = {} if deployment_api_base is None else {"api_base": deployment_api_base}
+    create_route, _ = _route_passthrough_calls(
+        monkeypatch, [_flagged("anthropic/claude-fable-5", _FOREIGN_DEPLOYMENT_KEY, **api_base_param)]
+    )
+    monkeypatch.setenv("ANTHROPIC_API_BASE", anthropic_api_base)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", _ENV_PROVIDER_KEY)
+
+    await anthropic_proxy_route(
+        endpoint="v1/messages",
+        request=_passthrough_request(),
+        fastapi_response=MagicMock(spec=Response),
+        user_api_key_dict=UserAPIKeyAuth(api_key="virtual-key"),
+    )
+
+    assert _FOREIGN_DEPLOYMENT_KEY not in repr(create_route.call_args_list)
+    assert _ENV_PROVIDER_KEY in repr(create_route.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_route_skips_a_deployment_with_a_malformed_api_base(monkeypatch: pytest.MonkeyPatch) -> None:
+    create_route, _ = _route_passthrough_calls(
+        monkeypatch,
+        [
+            _flagged("anthropic/broken", "sk-broken", api_base="https://api.anthropic.com:notaport"),
+            _flagged("anthropic/claude-fable-5", "sk-ant-real"),
+        ],
+    )
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    await anthropic_proxy_route(
+        endpoint="v1/messages",
+        request=_passthrough_request(),
+        fastapi_response=MagicMock(spec=Response),
+        user_api_key_dict=UserAPIKeyAuth(api_key="virtual-key"),
+    )
+
+    assert "sk-ant-real" in repr(create_route.call_args.kwargs["custom_headers"])

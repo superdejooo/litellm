@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 from starlette.routing import WebSocketRoute
 
+import litellm
 from litellm.proxy._types import UserAPIKeyAuth
 from litellm.proxy.pass_through_endpoints.llm_passthrough_endpoints import (
     _OPENAI_WS_DISABLED_REFUSAL,
@@ -156,6 +157,34 @@ async def test_openai_websocket_forwards_query_and_keeps_provider_auth(prefix, m
     assert websocket.accepts == [None]
     assert websocket.sent == []
     assert websocket.closed is None
+
+
+@pytest.mark.asyncio
+async def test_openai_websocket_keeps_a_foreign_host_deployment_key_off_the_openai_target(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-env")
+    monkeypatch.setattr(litellm, "credential_list", [])
+    llm_router: Final = litellm.Router(
+        model_list=[
+            {
+                "model_name": "deepseek-chat",
+                "litellm_params": {
+                    "model": "openai/deepseek-chat",
+                    "api_base": "https://api.deepseek.com",
+                    "api_key": "sk-deepseek",
+                    "use_in_pass_through": True,
+                },
+            }
+        ]
+    )
+    monkeypatch.setattr("litellm.proxy.proxy_server.llm_router", llm_router)
+    websocket = _FakeWebSocket("/openai/v1/realtime", "model=gpt-4o-realtime-preview")
+
+    served = await _serve(websocket, "v1/realtime", UserAPIKeyAuth(), ENABLED)
+
+    assert [call.custom_headers for call in served.relay.calls] == [
+        MappingProxyType({"Authorization": "Bearer sk-openai-env"})
+    ]
 
 
 @pytest.mark.asyncio

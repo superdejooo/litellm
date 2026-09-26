@@ -1,3 +1,7 @@
+import logging
+from types import MappingProxyType
+from typing import Final
+
 import pytest
 
 import litellm
@@ -14,6 +18,20 @@ def isolated_credential_list(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ASSEMBLYAI_API_KEY", raising=False)
+
+
+_OPENAI_ROUTE: Final = MappingProxyType(
+    {"target_api_base": "https://api.openai.com/", "provider_default_api_base": "https://api.openai.com"}
+)
+_ANTHROPIC_ROUTE: Final = MappingProxyType(
+    {"target_api_base": "https://api.anthropic.com", "provider_default_api_base": "https://api.anthropic.com"}
+)
+_ASSEMBLYAI_ROUTE: Final = MappingProxyType(
+    {"target_api_base": "https://api.assemblyai.com", "provider_default_api_base": "https://api.assemblyai.com"}
+)
+_ASSEMBLYAI_EU_ROUTE: Final = MappingProxyType(
+    {"target_api_base": "https://api.eu.assemblyai.com", "provider_default_api_base": "https://api.assemblyai.com"}
+)
 
 
 def _credential(name: str, api_key: str) -> CredentialItem:
@@ -41,12 +59,12 @@ def test_credential_loaded_after_deployment_registration_still_resolves():
     )
     passthrough_router = _passthrough_router(llm_router)
 
-    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) is None
+    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE) is None
 
     CredentialAccessor.upsert_credentials([_credential("cred_openai", "sk-loaded-after-boot")])
 
     assert (
-        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None)
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
         == "sk-loaded-after-boot"
     )
 
@@ -59,14 +77,14 @@ def test_credential_rotation_is_reflected_without_deployment_update():
     passthrough_router = _passthrough_router(llm_router)
 
     assert (
-        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None)
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
         == "sk-before-rotation"
     )
 
     CredentialAccessor.upsert_credentials([_credential("cred_openai", "sk-after-rotation")])
 
     assert (
-        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None)
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
         == "sk-after-rotation"
     )
 
@@ -75,13 +93,17 @@ def test_deleted_deployment_stops_serving_its_key(monkeypatch):
     llm_router = litellm.Router(model_list=[_flagged_deployment("openai/gpt-4o", api_key="sk-inline")])
     passthrough_router = _passthrough_router(llm_router)
 
-    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) == "sk-inline"
+    assert (
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
+        == "sk-inline"
+    )
 
     llm_router.set_model_list([])
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
 
     assert (
-        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) == "sk-from-env"
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
+        == "sk-from-env"
     )
 
 
@@ -92,7 +114,7 @@ def test_inline_api_key_resolves_without_credential_name():
     passthrough_router = _passthrough_router(llm_router)
 
     assert (
-        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None)
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
         == "sk-ant-inline"
     )
 
@@ -112,16 +134,22 @@ def test_file_credential_is_resolved_instead_of_returned_verbatim(monkeypatch, t
         )
     )
 
-    assert passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None) == "sk-ant-key-a"
+    assert (
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
+        == "sk-ant-key-a"
+    )
 
     key_file.write_text("sk-ant-key-b", encoding="utf-8")
     clock[0] += 6
-    assert passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None) == "sk-ant-key-b"
+    assert (
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
+        == "sk-ant-key-b"
+    )
 
     key_file.unlink()
     clock[0] += 6
     with pytest.raises(ValueError, match="no env fallback"):
-        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None)
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
 
 
 def test_missing_credential_and_no_inline_key_falls_back_to_env(monkeypatch):
@@ -132,7 +160,8 @@ def test_missing_credential_and_no_inline_key_falls_back_to_env(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
 
     assert (
-        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) == "sk-from-env"
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
+        == "sk-from-env"
     )
 
 
@@ -142,7 +171,7 @@ def test_deployment_for_other_provider_does_not_match():
     )
     passthrough_router = _passthrough_router(llm_router)
 
-    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) is None
+    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE) is None
 
 
 def test_unflagged_deployment_does_not_match():
@@ -156,7 +185,7 @@ def test_unflagged_deployment_does_not_match():
     )
     passthrough_router = _passthrough_router(llm_router)
 
-    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) is None
+    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE) is None
 
 
 def test_first_matching_deployment_wins():
@@ -168,7 +197,10 @@ def test_first_matching_deployment_wins():
     )
     passthrough_router = _passthrough_router(llm_router)
 
-    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) == "sk-first"
+    assert (
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
+        == "sk-first"
+    )
 
 
 def test_key_of_deployment_on_another_host_is_not_sent_to_the_target():
@@ -182,9 +214,7 @@ def test_key_of_deployment_on_another_host_is_not_sent_to_the_target():
     )
 
     assert (
-        passthrough_router.get_credentials(
-            custom_llm_provider="anthropic", region_name=None, target_api_base="https://api.anthropic.com"
-        )
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
         == "sk-ant-real"
     )
 
@@ -200,9 +230,7 @@ def test_only_foreign_host_deployment_falls_back_to_env(monkeypatch):
     )
 
     assert (
-        passthrough_router.get_credentials(
-            custom_llm_provider="anthropic", region_name=None, target_api_base="https://api.anthropic.com"
-        )
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
         == "sk-ant-env"
     )
 
@@ -219,11 +247,107 @@ def test_deployment_on_the_target_host_matches_regardless_of_path_and_case():
     )
 
     assert (
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
+        == "sk-ant-real"
+    )
+
+
+@pytest.mark.parametrize(
+    "target_api_base",
+    ["https://api.minimax.io/anthropic", "http://api.anthropic.com", "https://api.anthropic.com:8443"],
+)
+def test_deployment_without_api_base_only_matches_the_provider_default_origin(target_api_base):
+    passthrough_router = _passthrough_router(
+        litellm.Router(model_list=[_flagged_deployment("anthropic/claude-fable-5", api_key="sk-ant-real")])
+    )
+
+    assert (
         passthrough_router.get_credentials(
-            custom_llm_provider="anthropic", region_name=None, target_api_base="https://api.anthropic.com"
+            custom_llm_provider="anthropic",
+            region_name=None,
+            target_api_base=target_api_base,
+            provider_default_api_base="https://api.anthropic.com",
+        )
+        is None
+    )
+    assert (
+        passthrough_router.get_credentials(
+            custom_llm_provider="anthropic",
+            region_name=None,
+            target_api_base="https://api.anthropic.com:443/",
+            provider_default_api_base="https://api.anthropic.com",
         )
         == "sk-ant-real"
     )
+
+
+@pytest.mark.parametrize(
+    "target_api_base", ["http://api.anthropic.com", "https://api.anthropic.com:8443", "http://api.anthropic.com:443"]
+)
+def test_deployment_key_is_not_sent_to_the_same_host_on_another_scheme_or_port(target_api_base):
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[
+                _flagged_deployment(
+                    "anthropic/claude-fable-5", api_base="https://api.anthropic.com", api_key="sk-ant-real"
+                )
+            ]
+        )
+    )
+
+    assert (
+        passthrough_router.get_credentials(
+            custom_llm_provider="anthropic",
+            region_name=None,
+            target_api_base=target_api_base,
+            provider_default_api_base="https://api.anthropic.com",
+        )
+        is None
+    )
+
+
+def test_skipped_deployment_is_logged_with_its_model_and_both_origins(caplog):
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[
+                _flagged_deployment("anthropic/muse-spark", api_base="https://api.meta.ai/v1", api_key="meta-key")
+            ]
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="LiteLLM Router"):
+        passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
+
+    warnings: Final = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "anthropic/muse-spark" in warnings[0]
+    assert "https://api.meta.ai:443" in warnings[0]
+    assert "https://api.anthropic.com:443" in warnings[0]
+    assert "meta-key" not in caplog.text
+
+
+def test_malformed_api_base_skips_only_that_deployment(caplog):
+    passthrough_router = _passthrough_router(
+        litellm.Router(
+            model_list=[
+                _flagged_deployment(
+                    "anthropic/broken", api_base="https://api.anthropic.com:notaport", api_key="sk-broken"
+                ),
+                _flagged_deployment("anthropic/claude-fable-5", api_key="sk-ant-real"),
+            ]
+        )
+    )
+
+    with caplog.at_level(logging.WARNING, logger="LiteLLM Router"):
+        api_key: Final = passthrough_router.get_credentials(
+            custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE
+        )
+
+    assert api_key == "sk-ant-real"
+    warnings: Final = [record.getMessage() for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "anthropic/broken" in warnings[0]
+    assert "notaport" not in warnings[0]
 
 
 def test_assemblyai_region_matching():
@@ -237,8 +361,14 @@ def test_assemblyai_region_matching():
     )
     passthrough_router = _passthrough_router(llm_router)
 
-    assert passthrough_router.get_credentials(custom_llm_provider="assemblyai", region_name="eu") == "sk-eu"
-    assert passthrough_router.get_credentials(custom_llm_provider="assemblyai", region_name=None) == "sk-us"
+    assert (
+        passthrough_router.get_credentials(custom_llm_provider="assemblyai", region_name="eu", **_ASSEMBLYAI_EU_ROUTE)
+        == "sk-eu"
+    )
+    assert (
+        passthrough_router.get_credentials(custom_llm_provider="assemblyai", region_name=None, **_ASSEMBLYAI_ROUTE)
+        == "sk-us"
+    )
 
 
 def test_env_fallback_when_no_router(monkeypatch):
@@ -246,14 +376,15 @@ def test_env_fallback_when_no_router(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-from-env")
 
     assert (
-        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) == "sk-from-env"
+        passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE)
+        == "sk-from-env"
     )
 
 
 def test_returns_none_when_no_router_and_no_env():
     passthrough_router = _passthrough_router(None)
 
-    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None) is None
+    assert passthrough_router.get_credentials(custom_llm_provider="openai", region_name=None, **_OPENAI_ROUTE) is None
 
 
 def _vertex_credential(name: str, values: dict) -> CredentialItem:

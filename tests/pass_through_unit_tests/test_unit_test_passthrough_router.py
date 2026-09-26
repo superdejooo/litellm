@@ -12,6 +12,10 @@ from litellm.types.passthrough_endpoints.vertex_ai import VertexPassThroughCrede
 
 passthrough_endpoint_router = PassthroughEndpointRouter()
 
+
+def _route(api_base: str) -> dict[str, str]:
+    return {"target_api_base": api_base, "provider_default_api_base": api_base}
+
 """
 1. Basic Usage
     - Set OpenAI, AssemblyAI, Anthropic, Cohere credentials
@@ -77,11 +81,21 @@ class TestPassthroughEndpointRouter(unittest.TestCase):
         )
         router = PassthroughEndpointRouter(llm_router_getter=lambda: llm_router)
 
-        self.assertEqual(router.get_credentials("openai", None), "openai_key")
+        self.assertEqual(router.get_credentials("openai", None, **_route("https://api.openai.com/")), "openai_key")
         # AssemblyAI: an API base that contains 'eu' triggers regional matching
-        self.assertEqual(router.get_credentials("assemblyai", "eu"), "assemblyai_key")
-        self.assertEqual(router.get_credentials("anthropic", None), "anthropic_key")
-        self.assertEqual(router.get_credentials("cohere", None), "cohere_key")
+        self.assertEqual(
+            router.get_credentials(
+                "assemblyai",
+                "eu",
+                target_api_base="https://api.eu.assemblyai.com",
+                provider_default_api_base="https://api.assemblyai.com",
+            ),
+            "assemblyai_key",
+        )
+        self.assertEqual(
+            router.get_credentials("anthropic", None, **_route("https://api.anthropic.com")), "anthropic_key"
+        )
+        self.assertEqual(router.get_credentials("cohere", None, **_route("https://api.cohere.com")), "cohere_key")
 
     def test_get_credentials_from_env(self):
         """
@@ -95,7 +109,7 @@ class TestPassthroughEndpointRouter(unittest.TestCase):
         ) as mock_get_secret:
             mock_get_secret.return_value = "env_openai_key"
             # For "openai", if credentials are not set, it should fallback to the env variable.
-            result = self.router.get_credentials("openai", None)
+            result = self.router.get_credentials("openai", None, **_route("https://api.openai.com/"))
             self.assertEqual(result, "env_openai_key")
             mock_get_secret.assert_called_once_with("OPENAI_API_KEY")
 
@@ -103,7 +117,7 @@ class TestPassthroughEndpointRouter(unittest.TestCase):
             "litellm.proxy.pass_through_endpoints.passthrough_endpoint_router.get_secret_str"
         ) as mock_get_secret:
             mock_get_secret.return_value = "env_cohere_key"
-            result = self.router.get_credentials("cohere", None)
+            result = self.router.get_credentials("cohere", None, **_route("https://api.cohere.com"))
             self.assertEqual(result, "env_cohere_key")
             mock_get_secret.assert_called_once_with("COHERE_API_KEY")
 
@@ -111,7 +125,7 @@ class TestPassthroughEndpointRouter(unittest.TestCase):
             "litellm.proxy.pass_through_endpoints.passthrough_endpoint_router.get_secret_str"
         ) as mock_get_secret:
             mock_get_secret.return_value = "env_anthropic_key"
-            result = self.router.get_credentials("anthropic", None)
+            result = self.router.get_credentials("anthropic", None, **_route("https://api.anthropic.com"))
             self.assertEqual(result, "env_anthropic_key")
             mock_get_secret.assert_called_once_with("ANTHROPIC_API_KEY")
 
@@ -119,7 +133,7 @@ class TestPassthroughEndpointRouter(unittest.TestCase):
             "litellm.proxy.pass_through_endpoints.passthrough_endpoint_router.get_secret_str"
         ) as mock_get_secret:
             mock_get_secret.return_value = "env_azure_key"
-            result = self.router.get_credentials("azure", None)
+            result = self.router.get_credentials("azure", None, **_route("https://mine.openai.azure.com"))
             self.assertEqual(result, "env_azure_key")
             mock_get_secret.assert_called_once_with("AZURE_API_KEY")
 

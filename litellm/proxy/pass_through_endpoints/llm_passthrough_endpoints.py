@@ -100,6 +100,15 @@ router: Final = APIRouter()
 default_vertex_config: Final = None
 passthrough_endpoint_router: Final = PassthroughEndpointRouter()
 
+_GEMINI_DEFAULT_API_BASE: Final = "https://generativelanguage.googleapis.com"
+_COHERE_DEFAULT_API_BASE: Final = "https://api.cohere.com"
+_MISTRAL_DEFAULT_API_BASE: Final = "https://api.mistral.ai"
+_TYPESAFE_DEFAULT_API_BASE: Final = "https://api.typesafe.ai"
+_OPENROUTER_DEFAULT_API_BASE: Final = "https://openrouter.ai/api/v1"
+_ANTHROPIC_DEFAULT_API_BASE: Final = "https://api.anthropic.com"
+_OPENAI_DEFAULT_API_BASE: Final = "https://api.openai.com/"
+_CURSOR_DEFAULT_API_BASE: Final = "https://api.cursor.com"
+
 
 def create_request_copy(request: Request):
     return {
@@ -239,6 +248,7 @@ async def llm_passthrough_factory_proxy_route(
         custom_llm_provider=custom_llm_provider,
         region_name=None,
         target_api_base=base_target_url,
+        provider_default_api_base=base_target_url,
     )
 
     auth_headers: Final = provider_config.validate_environment(
@@ -297,7 +307,7 @@ async def gemini_proxy_route(
 
     user_api_key_dict: Final = await user_api_key_auth(request=request, api_key=f"Bearer {google_ai_studio_api_key}")
 
-    base_target_url: Final = os.getenv("GEMINI_API_BASE") or "https://generativelanguage.googleapis.com"
+    base_target_url: Final = os.getenv("GEMINI_API_BASE") or _GEMINI_DEFAULT_API_BASE
     encoded_endpoint = httpx.URL(endpoint).path
 
     # Ensure endpoint starts with '/' for proper URL construction
@@ -315,6 +325,8 @@ async def gemini_proxy_route(
     gemini_api_key: Final[str | None] = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="gemini",
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_GEMINI_DEFAULT_API_BASE,
     )
     if gemini_api_key is None:
         raise Exception(
@@ -360,7 +372,7 @@ async def cohere_proxy_route(
     """
     [Docs](https://docs.litellm.ai/docs/pass_through/cohere)
     """
-    base_target_url: Final = os.getenv("COHERE_API_BASE") or "https://api.cohere.com"
+    base_target_url: Final = os.getenv("COHERE_API_BASE") or _COHERE_DEFAULT_API_BASE
     encoded_endpoint = httpx.URL(endpoint).path
 
     # Ensure endpoint starts with '/' for proper URL construction
@@ -378,6 +390,8 @@ async def cohere_proxy_route(
     cohere_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="cohere",
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_COHERE_DEFAULT_API_BASE,
     )
 
     ## check for streaming
@@ -484,7 +498,7 @@ async def mistral_proxy_route(
     """
     [Docs](https://docs.litellm.ai/docs/pass_through/mistral)
     """
-    base_target_url: Final = os.getenv("MISTRAL_API_BASE") or "https://api.mistral.ai"
+    base_target_url: Final = os.getenv("MISTRAL_API_BASE") or _MISTRAL_DEFAULT_API_BASE
     encoded_endpoint = httpx.URL(endpoint).path
 
     # Ensure endpoint starts with '/' for proper URL construction
@@ -502,6 +516,8 @@ async def mistral_proxy_route(
     mistral_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="mistral",
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_MISTRAL_DEFAULT_API_BASE,
     )
 
     ## check for streaming
@@ -535,7 +551,7 @@ async def typesafe_proxy_route(
     user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
 ):
     """[Docs](https://docs.litellm.ai/docs/pass_through/typesafe)"""
-    base_target_url: Final = get_secret_str("TYPESAFE_API_BASE") or "https://api.typesafe.ai"
+    base_target_url: Final = get_secret_str("TYPESAFE_API_BASE") or _TYPESAFE_DEFAULT_API_BASE
     encoded_endpoint: Final = httpx.URL(endpoint).path
     normalized_endpoint: Final = encoded_endpoint if encoded_endpoint.startswith("/") else f"/{encoded_endpoint}"
     base_url: Final = httpx.URL(base_target_url)
@@ -545,6 +561,8 @@ async def typesafe_proxy_route(
     typesafe_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="typesafe",
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_TYPESAFE_DEFAULT_API_BASE,
     )
     endpoint_func: Final = create_pass_through_route(
         endpoint=endpoint,
@@ -570,7 +588,7 @@ async def openrouter_proxy_route(
     fastapi_response: Response,
     user_api_key_dict: Annotated[UserAPIKeyAuth, Depends(user_api_key_auth)],
 ):
-    base_target_url: Final = get_secret_str("OPENROUTER_API_BASE") or "https://openrouter.ai/api/v1"
+    base_target_url: Final = get_secret_str("OPENROUTER_API_BASE") or _OPENROUTER_DEFAULT_API_BASE
     api_root: Final = base_target_url.removesuffix("/").removesuffix("/v1")
     encoded_endpoint: Final = httpx.URL(endpoint).path
     normalized_endpoint: Final = encoded_endpoint if encoded_endpoint.startswith("/") else f"/{encoded_endpoint}"
@@ -581,6 +599,8 @@ async def openrouter_proxy_route(
     openrouter_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="openrouter",
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_OPENROUTER_DEFAULT_API_BASE,
     )
     endpoint_func: Final = create_pass_through_route(
         endpoint=endpoint,
@@ -752,7 +772,7 @@ async def anthropic_proxy_route(
     """
     [Docs](https://docs.litellm.ai/docs/pass_through/anthropic_completion)
     """
-    base_target_url = os.getenv("ANTHROPIC_API_BASE") or os.getenv("ANTHROPIC_BASE_URL") or "https://api.anthropic.com"
+    base_target_url = os.getenv("ANTHROPIC_API_BASE") or os.getenv("ANTHROPIC_BASE_URL") or _ANTHROPIC_DEFAULT_API_BASE
     encoded_endpoint = httpx.URL(endpoint).path
 
     # Ensure endpoint starts with '/' for proper URL construction
@@ -771,6 +791,7 @@ async def anthropic_proxy_route(
         custom_llm_provider="anthropic",
         region_name=None,
         target_api_base=base_target_url,
+        provider_default_api_base=_ANTHROPIC_DEFAULT_API_BASE,
     )
 
     ## check for streaming
@@ -1528,6 +1549,8 @@ async def assemblyai_proxy_route(
     assemblyai_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="assemblyai",
         region_name=assembly_region,
+        target_api_base=base_target_url,
+        provider_default_api_base=AssemblyAIPassthroughLoggingHandler._get_assembly_base_url_from_region(region=None),
     )
 
     ## check for streaming
@@ -1795,6 +1818,8 @@ async def azure_proxy_route(
     azure_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider=litellm.LlmProviders.AZURE.value,
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=base_target_url,
     )
     if azure_api_key is None:
         raise Exception("Required 'AZURE_API_KEY' in environment to make pass-through calls to Azure.")
@@ -2404,11 +2429,13 @@ async def openai_proxy_route(
 
     [Docs](https://docs.litellm.ai/docs/pass_through/openai_passthrough)
     """
-    base_target_url: Final = os.getenv("OPENAI_API_BASE") or "https://api.openai.com/"
+    base_target_url: Final = os.getenv("OPENAI_API_BASE") or _OPENAI_DEFAULT_API_BASE
     # Add or update query parameters
     openai_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider=litellm.LlmProviders.OPENAI.value,
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_OPENAI_DEFAULT_API_BASE,
     )
     if openai_api_key is None:
         raise Exception("Required 'OPENAI_API_KEY' in environment to make pass-through calls to OpenAI.")
@@ -2578,10 +2605,12 @@ async def openai_websocket_proxy_route(
         await websocket.close(code=1008, reason=refusal.close_reason)
         return
 
-    base_target_url: Final = os.getenv("OPENAI_API_BASE") or "https://api.openai.com/"
+    base_target_url: Final = os.getenv("OPENAI_API_BASE") or _OPENAI_DEFAULT_API_BASE
     openai_api_key: Final = passthrough_endpoint_router.get_credentials(
         custom_llm_provider=litellm.LlmProviders.OPENAI.value,
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_OPENAI_DEFAULT_API_BASE,
     )
     if openai_api_key is None:
         await websocket.close(
@@ -2738,11 +2767,13 @@ async def cursor_proxy_route(
     """
     import base64
 
-    base_target_url = os.getenv("CURSOR_API_BASE") or "https://api.cursor.com"
+    base_target_url = os.getenv("CURSOR_API_BASE") or _CURSOR_DEFAULT_API_BASE
 
     cursor_api_key = passthrough_endpoint_router.get_credentials(
         custom_llm_provider="cursor",
         region_name=None,
+        target_api_base=base_target_url,
+        provider_default_api_base=_CURSOR_DEFAULT_API_BASE,
     )
 
     if cursor_api_key is None:
