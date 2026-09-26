@@ -1975,7 +1975,12 @@ class MCPRequestHandler:
         if not team_obj:
             return None
 
-        return team_obj.object_permission
+        return await MCPRequestHandler._hydrated_object_permission(
+            principal=f"team {team_obj.team_id!r}",
+            loaded=team_obj.object_permission,
+            object_permission_id=team_obj.object_permission_id,
+            user_api_key_auth=user_api_key_auth,
+        )
 
     @staticmethod
     async def _toolset_tool_permissions(
@@ -2025,30 +2030,40 @@ class MCPRequestHandler:
         return tuple({*(direct or ()), *(via_toolsets or ())})
 
     @staticmethod
+    async def _hydrated_object_permission(
+        principal: str,
+        loaded: LiteLLM_ObjectPermissionTable | None,
+        object_permission_id: str | None,
+        user_api_key_auth: UserAPIKeyAuth,
+    ) -> LiteLLM_ObjectPermissionTable | None:
+        """``loaded``, else the row ``object_permission_id`` names, which the main auth flow may have cached
+        unhydrated (its loaders swallow a failed read). RAISES ``UnloadableEntitlementError`` if unreadable."""
+        if loaded is not None or not object_permission_id:
+            return loaded
+        from litellm.proxy.proxy_server import prisma_client
+
+        if prisma_client is None:
+            raise UnloadableEntitlementError(
+                f"{principal} names object_permission_id {object_permission_id!r} but no DB is connected"
+            )
+        return await MCPRequestHandler._load_named_object_permission(
+            principal=principal,
+            object_permission_id=object_permission_id,
+            prisma_client=prisma_client,
+            user_api_key_auth=user_api_key_auth,
+        )
+
+    @staticmethod
     async def _key_object_permission_hydrated(
         user_api_key_auth: UserAPIKeyAuth,
     ) -> LiteLLM_ObjectPermissionTable | None:
-        """The key's object_permission, loading it by ``object_permission_id`` when the main auth
-        flow cached the key with the relation unhydrated (its loader swallows a failed read and
-        caches the partial object)."""
-        loaded: Final = MCPRequestHandler._get_key_object_permission(user_api_key_auth)
-        if loaded is not None or not user_api_key_auth.object_permission_id:
-            return loaded
-        from litellm.proxy.auth.auth_checks import get_object_permission
-        from litellm.proxy.proxy_server import (
-            prisma_client,
-            proxy_logging_obj,
-            user_api_key_cache,
-        )
-
-        if prisma_client is None:
-            return None
-        return await get_object_permission(
+        """The key's object_permission, loaded by ``object_permission_id`` when cached unhydrated.
+        RAISES ``UnloadableEntitlementError`` when the key names a row that cannot be read."""
+        return await MCPRequestHandler._hydrated_object_permission(
+            principal="key",
+            loaded=MCPRequestHandler._get_key_object_permission(user_api_key_auth),
             object_permission_id=user_api_key_auth.object_permission_id,
-            prisma_client=prisma_client,
-            user_api_key_cache=user_api_key_cache,
-            parent_otel_span=user_api_key_auth.parent_otel_span,
-            proxy_logging_obj=proxy_logging_obj,
+            user_api_key_auth=user_api_key_auth,
         )
 
     @staticmethod
@@ -2061,7 +2076,7 @@ class MCPRequestHandler:
         Falls back to the DB when the auth object carries ``object_permission_id`` unhydrated (the
         main auth flow swallows a failed load and caches the partial object). An INDETERMINATE fault
         answers False — no gate, org substitution as before the fault — mirroring how the org ceiling
-        keeps key auth open on a fault it cannot classify."""
+        keeps key auth open on a fault it cannot classify. ``UnloadableEntitlementError`` propagates."""
         if user_api_key_auth is None:
             return False
         try:
@@ -2072,6 +2087,8 @@ class MCPRequestHandler:
                 return False
             team_obj_perm: Final = await MCPRequestHandler._get_team_object_permission(user_api_key_auth)
             return bool(team_obj_perm is not None and team_obj_perm.mcp_toolsets)
+        except UnloadableEntitlementError:
+            raise
         except Exception as e:  # noqa: BLE001  # indeterminate fault: no gate, as before this level existed
             verbose_logger.warning("Failed to check declared MCP toolsets, org ceiling unchanged: %s", e)
             return False
@@ -2361,25 +2378,8 @@ class MCPRequestHandler:
             from litellm.proxy._experimental.mcp_server.mcp_server_manager import (
                 global_mcp_server_manager,
             )
-            from litellm.proxy.auth.auth_checks import (
-                get_object_permission,
-            )
-            from litellm.proxy.proxy_server import (
-                prisma_client,
-                proxy_logging_obj,
-                user_api_key_cache,
-            )
 
-            # Get key object permission (already loaded in main auth flow, or fetch from DB)
-            key_object_permission = MCPRequestHandler._get_key_object_permission(user_api_key_auth)
-            if key_object_permission is None and user_api_key_auth.object_permission_id and prisma_client is not None:
-                key_object_permission = await get_object_permission(
-                    object_permission_id=user_api_key_auth.object_permission_id,
-                    prisma_client=prisma_client,
-                    user_api_key_cache=user_api_key_cache,
-                    parent_otel_span=user_api_key_auth.parent_otel_span,
-                    proxy_logging_obj=proxy_logging_obj,
-                )
+            key_object_permission: Final = await MCPRequestHandler._key_object_permission_hydrated(user_api_key_auth)
             if key_object_permission is None:
                 return []
 
@@ -2416,6 +2416,8 @@ class MCPRequestHandler:
             # Combine all lists
             all_servers: Final = direct_mcp_servers + access_group_servers + tool_perm_servers + toolset_servers
             return list(set(all_servers))
+        except UnloadableEntitlementError:
+            raise
         except Exception as e:
             verbose_logger.warning("Failed to get allowed MCP servers for key: %s", e)
             return []
@@ -2534,15 +2536,14 @@ class MCPRequestHandler:
                 user_api_key_cache,
             )
 
-            if not team_id or team_id == UI_TEAM_ID or prisma_client is None:
+            if not team_id or team_id == UI_TEAM_ID or prisma_client is None or user_api_key_auth is None:
                 return []
 
-            parent_otel_span: Final = user_api_key_auth.parent_otel_span if user_api_key_auth is not None else None
             team_obj: Final[LiteLLM_TeamTable | None] = await get_team_object(
                 team_id=team_id,
                 prisma_client=prisma_client,
                 user_api_key_cache=user_api_key_cache,
-                parent_otel_span=parent_otel_span,
+                parent_otel_span=user_api_key_auth.parent_otel_span,
                 proxy_logging_obj=proxy_logging_obj,
             )
             if team_obj is None:
@@ -2559,7 +2560,18 @@ class MCPRequestHandler:
                 proxy_logging_obj=proxy_logging_obj,
             )
 
-            servers: Final = await MCPRequestHandler._team_granted_servers(team_obj, team_access_group_servers)
+            object_permission: Final = await MCPRequestHandler._hydrated_object_permission(
+                principal=f"team {team_id!r}",
+                loaded=team_obj.object_permission,
+                object_permission_id=team_obj.object_permission_id,
+                user_api_key_auth=user_api_key_auth,
+            )
+            hydrated_team: Final = (
+                team_obj
+                if object_permission is team_obj.object_permission
+                else team_obj.model_copy(update={"object_permission": object_permission})
+            )
+            servers: Final = await MCPRequestHandler._team_granted_servers(hydrated_team, team_access_group_servers)
             return list(servers)
         except Exception as e:
             if isinstance(e, UnloadableEntitlementError):

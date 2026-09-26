@@ -986,6 +986,118 @@ class TestMCPRequestHandler:
         assert is_other_tool_allowed is False
         assert get_object_permission.await_args.kwargs["object_permission_id"] == "op-1"
 
+    @pytest.mark.parametrize("prisma_client", [MagicMock(), None], ids=["read-fails", "no-db"])
+    async def test_get_allowed_tools_for_server_denies_when_key_permission_is_unreadable(self, prisma_client):
+        """A key that NAMES an object_permission whose row cannot be read has a restriction with unknown
+        contents: its tools must be denied, never widened to allow-all"""
+        user_api_key_auth = UserAPIKeyAuth(api_key="test-key", object_permission_id="op-1")
+
+        with (
+            patch(  # test-quality-ok: the hydration fallback requires the proxy's module-global prisma client
+                "litellm.proxy.proxy_server.prisma_client", prisma_client
+            ),
+            patch(  # test-quality-ok: get_object_permission answers None for a failed read; no injection seam
+                "litellm.proxy.auth.auth_checks.get_object_permission", AsyncMock(return_value=None)
+            ),
+            patch.object(MCPRequestHandler, "_get_team_object_permission", AsyncMock(return_value=None)),
+            patch(
+                "litellm.proxy._experimental.mcp_server.mcp_server_manager.global_mcp_server_manager",
+                self._mock_manager_with_toolsets({}),
+            ),
+        ):
+            allowed = await MCPRequestHandler.get_allowed_tools_for_server(
+                server_id="server-a", user_api_key_auth=user_api_key_auth
+            )
+            is_tool_allowed = await MCPRequestHandler.is_tool_allowed_for_server(
+                tool_name="delete_everything", server_id="server-a", user_api_key_auth=user_api_key_auth
+            )
+
+        assert allowed == []
+        assert is_tool_allowed is False
+
+    async def test_get_allowed_tools_for_server_denies_when_team_permission_is_unreadable(self):
+        """The team loader swallows a failed permission read and caches the team with the relation
+        unset; the tool gate must deny rather than read that as an unrestricted team"""
+        from litellm.proxy._types import LiteLLM_TeamTable
+
+        user_api_key_auth = UserAPIKeyAuth(api_key="test-key", team_id="team-1")
+        team_obj = LiteLLM_TeamTable(team_id="team-1", object_permission_id="op-team")
+
+        with (
+            patch(  # test-quality-ok: the team loader requires the proxy's module-global prisma client
+                "litellm.proxy.proxy_server.prisma_client", MagicMock()
+            ),
+            patch(  # test-quality-ok: the cached team object as the main auth flow leaves it; no injection seam
+                "litellm.proxy.auth.auth_checks.get_team_object", AsyncMock(return_value=team_obj)
+            ),
+            patch(  # test-quality-ok: get_object_permission answers None for a failed read; no injection seam
+                "litellm.proxy.auth.auth_checks.get_object_permission", AsyncMock(return_value=None)
+            ),
+            patch(
+                "litellm.proxy._experimental.mcp_server.mcp_server_manager.global_mcp_server_manager",
+                self._mock_manager_with_toolsets({}),
+            ),
+        ):
+            allowed = await MCPRequestHandler.get_allowed_tools_for_server(
+                server_id="server-a", user_api_key_auth=user_api_key_auth
+            )
+
+        assert allowed == []
+
+    async def test_get_allowed_mcp_servers_denies_when_key_permission_is_unreadable_under_a_team(self):
+        """An unreadable key restriction must not let the key inherit its team's full server list"""
+        user_api_key_auth = UserAPIKeyAuth(api_key="test-key", team_id="team-1", object_permission_id="op-1")
+
+        with (
+            patch(  # test-quality-ok: the hydration fallback requires the proxy's module-global prisma client
+                "litellm.proxy.proxy_server.prisma_client", MagicMock()
+            ),
+            patch(  # test-quality-ok: get_object_permission answers None for a failed read; no injection seam
+                "litellm.proxy.auth.auth_checks.get_object_permission", AsyncMock(return_value=None)
+            ),
+            patch.object(
+                MCPRequestHandler, "_get_allowed_mcp_servers_for_team", AsyncMock(return_value=["server-a", "server-b"])
+            ),
+            patch.object(MCPRequestHandler, "_get_key_access_group_mcp_server_extras", AsyncMock(return_value=[])),
+        ):
+            result = await MCPRequestHandler.get_allowed_mcp_servers(user_api_key_auth)
+
+        assert result == []
+
+    async def test_get_allowed_mcp_servers_denies_when_team_permission_is_unreadable(self):
+        """An unreadable team ceiling must not leave the key's own servers uncapped"""
+        from litellm.proxy._types import LiteLLM_TeamTable
+
+        user_api_key_auth = UserAPIKeyAuth(api_key="test-key", team_id="team-1")
+        key_object_permission = self._toolset_only_object_permission([])
+        key_object_permission.mcp_servers = ["server-a", "server-b"]
+        team_obj = LiteLLM_TeamTable(team_id="team-1", object_permission_id="op-team")
+
+        with (
+            patch.object(MCPRequestHandler, "_get_key_object_permission", return_value=key_object_permission),
+            patch(  # test-quality-ok: the team loader requires the proxy's module-global prisma client
+                "litellm.proxy.proxy_server.prisma_client", MagicMock()
+            ),
+            patch(  # test-quality-ok: the cached team object as the main auth flow leaves it; no injection seam
+                "litellm.proxy.auth.auth_checks.get_team_object", AsyncMock(return_value=team_obj)
+            ),
+            patch(  # test-quality-ok: get_object_permission answers None for a failed read; no injection seam
+                "litellm.proxy.auth.auth_checks.get_object_permission", AsyncMock(return_value=None)
+            ),
+            patch(  # test-quality-ok: access-group lookup hits the DB, not under test here
+                "litellm.proxy.auth.auth_checks._get_mcp_server_ids_from_access_groups", AsyncMock(return_value=[])
+            ),
+            patch(
+                "litellm.proxy._experimental.mcp_server.mcp_server_manager.global_mcp_server_manager",
+                self._mock_manager_with_toolsets({}),
+            ),
+            patch.object(MCPRequestHandler, "_get_mcp_servers_from_access_groups", AsyncMock(return_value=[])),
+            patch.object(MCPRequestHandler, "_get_key_access_group_mcp_server_extras", AsyncMock(return_value=[])),
+        ):
+            result = await MCPRequestHandler.get_allowed_mcp_servers(user_api_key_auth)
+
+        assert result == []
+
     async def test_declares_toolsets_gate_swallows_team_lookup_fault(self):
         """An indeterminate fault while checking the team must answer False (org substitution
         unchanged, matching base fault behavior), never escape as deny-all"""
@@ -4216,15 +4328,6 @@ async def test_get_allowed_mcp_servers_for_team_without_team_id_returns_empty():
             object(),
             "no_object_permission_id",
         ),
-        (
-            UserAPIKeyAuth(
-                api_key="test-key",
-                user_id="test-user",
-                object_permission_id="perm-123",
-            ),
-            None,
-            "no_prisma_client",
-        ),
     ],
 )
 async def test_get_allowed_mcp_servers_for_key_guard_conditions(user_api_key_auth, prisma_client_value, scenario):
@@ -4242,8 +4345,10 @@ async def test_get_allowed_mcp_servers_for_key_guard_conditions(user_api_key_aut
 
 
 @pytest.mark.asyncio
-async def test_get_allowed_mcp_servers_for_key_returns_empty_when_db_returns_none():
-    """Ensure [] is returned when get_object_permission yields None."""
+@pytest.mark.parametrize("prisma_client_value", [object(), None], ids=["db-returns-none", "no-db"])
+async def test_get_allowed_mcp_servers_for_key_raises_when_named_permission_is_unreadable(prisma_client_value):
+    """[] here means "the key places no restriction", so a named but unreadable permission must raise
+    UnloadableEntitlementError (denied by the caller) instead."""
 
     user_api_key_auth = UserAPIKeyAuth(
         api_key="test-key",
@@ -4251,21 +4356,18 @@ async def test_get_allowed_mcp_servers_for_key_returns_empty_when_db_returns_non
         object_permission_id="perm-123",
     )
 
-    mock_prisma = object()
-
     with (
-        patch("litellm.proxy.proxy_server.prisma_client", mock_prisma),
+        patch("litellm.proxy.proxy_server.prisma_client", prisma_client_value),
         patch(
             "litellm.proxy.auth.auth_checks.get_object_permission",
             new_callable=AsyncMock,
+            return_value=None,
         ) as mock_get_perm,
     ):
-        mock_get_perm.return_value = None
+        with pytest.raises(UnloadableEntitlementError, match="perm-123"):
+            await MCPRequestHandler._get_allowed_mcp_servers_for_key(user_api_key_auth)
 
-        result = await MCPRequestHandler._get_allowed_mcp_servers_for_key(user_api_key_auth)
-
-    assert result == []
-    mock_get_perm.assert_awaited_once()
+    assert mock_get_perm.await_count == (0 if prisma_client_value is None else 1)
 
 
 @pytest.mark.asyncio
