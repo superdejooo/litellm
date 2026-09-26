@@ -282,23 +282,50 @@ class TestChatGPTResponsesAPITransformation:
         assert request["input"] == [{"role": "user", "content": "hi"}]
         assert request["instructions"] == "BASE"
 
-    def test_chatgpt_system_content_parts_skip_non_text_values(self):
+    def test_chatgpt_drops_system_input_item_with_no_content_parts(self):
         request = self._transform_request(
             [
-                {
-                    "role": "system",
-                    "content": [
-                        {"type": "input_text", "text": 123},
-                        {"type": "input_image", "image_url": "https://example.com/a.png"},
-                        {"type": "text", "text": "Valid text."},
-                    ],
-                },
+                {"role": "system", "content": []},
+                {"role": "system", "content": [{"type": "input_text", "text": ""}]},
                 {"role": "user", "content": "hi"},
             ]
         )
 
         assert request["input"] == [{"role": "user", "content": "hi"}]
-        assert request["instructions"] == "BASE\n\nValid text."
+        assert request["instructions"] == "BASE"
+
+    @pytest.mark.parametrize(
+        ("system_content", "rejected_part"),
+        [
+            (
+                [{"type": "input_image", "image_url": "https://example.com/a.png"}],
+                "input_image",
+            ),
+            (
+                [
+                    {"type": "input_text", "text": "Valid text."},
+                    {"type": "input_file", "file_id": "file-1"},
+                ],
+                "input_file",
+            ),
+            ([{"type": "input_text", "text": 123}], "input_text"),
+        ],
+    )
+    def test_chatgpt_rejects_system_content_that_instructions_cannot_hold(
+        self, system_content, rejected_part
+    ):
+        with pytest.raises(litellm.BadRequestError) as exc_info:
+            self._transform_request(
+                [
+                    {"role": "system", "content": system_content},
+                    {"role": "user", "content": "hi"},
+                ]
+            )
+
+        assert exc_info.value.status_code == 400
+        assert exc_info.value.llm_provider == "chatgpt"
+        assert rejected_part in exc_info.value.message
+        assert "system" in exc_info.value.message
 
     @pytest.mark.parametrize(
         "input",

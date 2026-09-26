@@ -1,7 +1,7 @@
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, Final
 
-from litellm.exceptions import AuthenticationError
+from litellm.exceptions import AuthenticationError, BadRequestError
 from litellm.litellm_core_utils.core_helpers import process_response_headers
 from litellm.litellm_core_utils.llm_response_utils.convert_dict_to_response import (
     _safe_convert_created_field,
@@ -37,19 +37,36 @@ def _is_system_input_item(item: object) -> bool:
     return isinstance(item, Mapping) and item.get("role") == "system"
 
 
-def _system_input_item_texts(item: object) -> tuple[str, ...]:
+def _non_text_part_label(part: object) -> str | None:
+    if not isinstance(part, Mapping):
+        return type(part).__name__
+    if part.get("type") in ("text", "input_text") and isinstance(part.get("text"), str):
+        return None
+    return str(part.get("type"))
+
+
+def _system_input_item_texts(item: object, model: str) -> tuple[str, ...]:
     content: Final = item.get("content") if isinstance(item, Mapping) else None
-    if isinstance(content, str):
+    if content is None or isinstance(content, str):
         return (content,) if content else ()
-    if not isinstance(content, list):
-        return ()
-    part_texts: Final = (
-        part.get("text") for part in content if isinstance(part, Mapping) and part.get("type") in ("text", "input_text")
+    parts: Final = content if isinstance(content, list) else (content,)
+    non_text_parts: Final = tuple(label for part in parts if (label := _non_text_part_label(part)) is not None)
+    if non_text_parts:
+        raise BadRequestError(
+            message=(
+                "The ChatGPT backend rejects system input items, so their text is moved into instructions, "
+                f"but a system item also carries {', '.join(non_text_parts)} content that instructions cannot hold. "
+                "Send that content in a user input item."
+            ),
+            model=model,
+            llm_provider=LlmProviders.CHATGPT.value,
+        )
+    return tuple(
+        text for part in parts if isinstance(part, Mapping) and isinstance(text := part.get("text"), str) and text
     )
-    return tuple(text for text in part_texts if isinstance(text, str) and text)
 
 
-def _chatgpt_input_and_instructions(input_value: object, instructions: object) -> tuple[object, str | None]:
+def _chatgpt_input_and_instructions(input_value: object, instructions: object, model: str) -> tuple[object, str | None]:
     """Wrap scalar input and lift system input items into instructions, both rejected by the ChatGPT backend."""
     if instructions is not None and not isinstance(instructions, str):
         raise TypeError("ChatGPT Responses instructions must be a string")
@@ -59,7 +76,7 @@ def _chatgpt_input_and_instructions(input_value: object, instructions: object) -
         return input_value, instructions
 
     system_texts: Final = tuple(
-        text for item in input_value if _is_system_input_item(item) for text in _system_input_item_texts(item)
+        text for item in input_value if _is_system_input_item(item) for text in _system_input_item_texts(item, model)
     )
     non_system_items: Final = [item for item in input_value if not _is_system_input_item(item)]
     if not system_texts:
@@ -113,7 +130,7 @@ class ChatGPTResponsesAPIConfig(OpenAIResponsesAPIConfig):
             headers,
         )
         chatgpt_input, chatgpt_instructions = _chatgpt_input_and_instructions(
-            request.get("input"), request.get("instructions")
+            request.get("input"), request.get("instructions"), model
         )
         request["input"] = chatgpt_input
         request["instructions"] = chatgpt_instructions
