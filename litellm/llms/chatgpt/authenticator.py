@@ -10,6 +10,7 @@ from pydantic import JsonValue, TypeAdapter, ValidationError
 
 from litellm._logging import verbose_logger
 from litellm.llms.custom_httpx.http_handler import _get_httpx_client
+from litellm.secret_managers.main import str_to_bool
 
 from .common_utils import (
     CHATGPT_API_BASE,
@@ -64,8 +65,9 @@ class Authenticator:
                     refreshed: Final = self._refresh_tokens(refresh_token)
                     return refreshed["access_token"]
                 except RefreshAccessTokenError as exc:
-                    verbose_logger.warning("ChatGPT refresh token failed, re-login required: %s", exc)
+                    verbose_logger.error("ChatGPT refresh token failed, re-login required: %s", exc)
 
+        self._raise_if_interactive_login_disabled()
         cooldown_remaining: Final = self._get_device_code_cooldown_remaining(auth_data)
         if cooldown_remaining > 0:
             token: Final = self._wait_for_access_token(cooldown_remaining)
@@ -150,7 +152,19 @@ class Authenticator:
                 return account_id
         return None
 
+    def _raise_if_interactive_login_disabled(self) -> None:
+        if str_to_bool(os.getenv("LITELLM_DISABLE_INTERACTIVE_OAUTH")) is True:
+            raise GetAccessTokenError(
+                message=(
+                    f"ChatGPT OAuth token in {self.auth_file} is missing, expired, or could not be refreshed, "
+                    "and interactive device-code login is disabled by LITELLM_DISABLE_INTERACTIVE_OAUTH. "
+                    f"Provision a fresh auth file in {self.token_dir}."
+                ),
+                status_code=401,
+            )
+
     def _login_device_code(self) -> dict[str, str]:
+        self._raise_if_interactive_login_disabled()
         cooldown_remaining: Final = self._get_device_code_cooldown_remaining(self._read_auth_file())
         if cooldown_remaining > 0:
             token: Final = self._wait_for_access_token(cooldown_remaining)

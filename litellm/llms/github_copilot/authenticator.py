@@ -8,6 +8,7 @@ import httpx
 
 from litellm._logging import verbose_logger
 from litellm.llms.custom_httpx.http_handler import _get_httpx_client
+from litellm.secret_managers.main import str_to_bool
 
 from .common_utils import (
     APIKeyExpiredError,
@@ -340,6 +341,16 @@ class Authenticator:
             GetDeviceCodeError: If unable to get a device code.
             GetAccessTokenError: If unable to get an access token.
         """
+        if str_to_bool(os.getenv("LITELLM_DISABLE_INTERACTIVE_OAUTH")) is True:
+            raise GetAccessTokenError(
+                message=(
+                    f"GitHub Copilot access token not found at {self.access_token_file}, "
+                    "and interactive device-code login is disabled by LITELLM_DISABLE_INTERACTIVE_OAUTH. "
+                    "Provision the access token file."
+                ),
+                status_code=401,
+            )
+
         device_code_info: Final = self._get_device_code()
 
         device_code: Final = device_code_info["device_code"]

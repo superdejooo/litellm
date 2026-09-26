@@ -233,6 +233,76 @@ class TestGitHubCopilotAuthenticator:
             )
             mock_print.assert_called_once()
 
+    def test_login_raises_when_interactive_oauth_disabled(
+        self, authenticator, monkeypatch
+    ):
+        """Test that the device flow is not started when interactive OAuth is disabled."""
+        monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", "true")
+
+        with (
+            patch(
+                "litellm.llms.github_copilot.authenticator._get_httpx_client"
+            ) as mock_client,
+            patch("builtins.print") as mock_print,
+        ):
+            with pytest.raises(GetAccessTokenError) as exc_info:
+                authenticator._login()
+
+        assert exc_info.value.status_code == 401
+        assert authenticator.access_token_file in exc_info.value.message
+        assert "LITELLM_DISABLE_INTERACTIVE_OAUTH" in exc_info.value.message
+        mock_client.assert_not_called()
+        mock_print.assert_not_called()
+
+    def test_get_access_token_fails_fast_when_interactive_oauth_disabled(
+        self, authenticator, monkeypatch
+    ):
+        """Test that a missing token file fails without any device-flow HTTP call or poll sleep."""
+        monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", "true")
+
+        with (
+            patch("builtins.open", side_effect=IOError),
+            patch(
+                "litellm.llms.github_copilot.authenticator._get_httpx_client"
+            ) as mock_client,
+            patch("litellm.llms.github_copilot.authenticator.time.sleep") as mock_sleep,
+        ):
+            with pytest.raises(GetAccessTokenError) as exc_info:
+                authenticator.get_access_token()
+
+        assert exc_info.value.status_code == 401
+        mock_client.assert_not_called()
+        mock_sleep.assert_not_called()
+
+    @pytest.mark.parametrize("flag", [None, "false", ""])
+    def test_login_runs_device_flow_when_interactive_oauth_enabled(
+        self, authenticator, monkeypatch, flag
+    ):
+        """Test that the device flow is unchanged when the flag is unset or false."""
+        if flag is None:
+            monkeypatch.delenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", raising=False)
+        else:
+            monkeypatch.setenv("LITELLM_DISABLE_INTERACTIVE_OAUTH", flag)
+
+        with (
+            patch.object(
+                authenticator,
+                "_get_device_code",
+                return_value={
+                    "device_code": "mock-device-code",
+                    "user_code": "ABCD-EFGH",
+                    "verification_uri": "https://github.com/login/device",
+                },
+            ) as mock_get_device_code,
+            patch.object(
+                authenticator, "_poll_for_access_token", return_value="mock-access-token"
+            ),
+            patch("builtins.print"),
+        ):
+            assert authenticator._login() == "mock-access-token"
+
+        mock_get_device_code.assert_called_once()
+
     def test_get_api_base_from_file(self, authenticator):
         """Test retrieving the API base endpoint from a file."""
         mock_api_key_data = json.dumps(
