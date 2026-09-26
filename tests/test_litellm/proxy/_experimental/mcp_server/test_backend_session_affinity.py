@@ -17,6 +17,8 @@ from unittest.mock import MagicMock
 import httpx
 import pytest
 from mcp.types import CallToolRequestParams, CallToolResult, TextContent
+from redis.asyncio.connection import SSLConnection
+from redis.exceptions import AuthenticationError
 
 import litellm.proxy._experimental.mcp_server.backend_session_affinity as affinity_module
 from litellm._logging import verbose_logger
@@ -29,6 +31,7 @@ from litellm.proxy._experimental.mcp_server.backend_session_affinity import (
     StickyCall,
     is_dead_session_error,
     is_session_rejection_body,
+    redis_from_env,
     valid_session_ref,
 )
 from litellm.proxy._experimental.mcp_server.mcp_server_manager import MCPServerManager
@@ -1171,6 +1174,74 @@ class TestSilentDegradationSpeaks:
         loser: Final = MCPClient(server_url="http://127.0.0.1:1/mcp", timeout=2)
         await asyncio.wait_for(make_affinity(FakeRedis())._terminate(loser, "sid-1"), timeout=5)
         assert any("could not DELETE backend session" in m for m in log_messages)
+
+    @pytest.mark.asyncio
+    async def test_a_rejected_redis_login_names_the_operation_and_the_cause(self, log_messages: list[str]) -> None:
+        redis: Final = FakeRedis()
+
+        async def wrongpass(name: str) -> bytes | None:
+            raise AuthenticationError("WRONGPASS invalid username-password pair or user is disabled.")
+
+        redis.get = wrongpass
+        result: Final = await call_sticky(make_affinity(redis), Factory([FakeClient()]))
+        assert STORE_DOWN in text_of(result)
+        assert any("redis get" in m and "AuthenticationError" in m and "WRONGPASS" in m for m in log_messages), (
+            log_messages
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_redis_client_that_cannot_be_built_is_logged(self, log_messages: list[str]) -> None:
+        result: Final = await call_sticky(failing_redis_affinity(), Factory([FakeClient()]))
+        assert STORE_DOWN in text_of(result)
+        assert any("cannot reach redis" in m for m in log_messages), log_messages
+
+    @pytest.mark.asyncio
+    async def test_a_programming_error_is_not_disguised_as_a_store_outage(self) -> None:
+        redis: Final = FakeRedis()
+
+        async def broken(name: str) -> bytes | None:
+            raise TypeError("unexpected keyword")
+
+        redis.get = broken
+        with pytest.raises(TypeError, match="unexpected keyword"):
+            await call_sticky(make_affinity(redis), Factory([FakeClient()]))
+
+
+class TestRedisConfiguration:
+    """The store must reach the same Redis the proxy is configured for, not a host/port/password subset."""
+
+    def test_redis_url_carries_tls_username_host_and_port(self) -> None:
+        client: Final = redis_from_env({"REDIS_URL": "rediss://alice:secret@redis.example:6380/0"})
+        pool: Final = client.connection_pool
+        assert pool.connection_class is SSLConnection
+        assert pool.connection_kwargs["username"] == "alice"
+        assert pool.connection_kwargs["host"] == "redis.example"
+        assert pool.connection_kwargs["port"] == 6380
+
+    def test_redis_ssl_and_username_are_honoured_with_a_host(self) -> None:
+        client: Final = redis_from_env(
+            {
+                "REDIS_HOST": "redis.example",
+                "REDIS_PORT": "6380",
+                "REDIS_SSL": "true",
+                "REDIS_USERNAME": "alice",
+                "REDIS_PASSWORD": "secret",
+            }
+        )
+        pool: Final = client.connection_pool
+        assert pool.connection_class is SSLConnection
+        assert pool.connection_kwargs["username"] == "alice"
+        assert pool.connection_kwargs["port"] == 6380
+
+    @pytest.mark.asyncio
+    async def test_redis_url_alone_selects_the_shared_store(self) -> None:
+        redis: Final = FakeRedis()
+        aff: Final = BackendSessionAffinity(
+            env={"MCP_STATEFUL_SERVERS": "Playwright", "REDIS_URL": "redis://redis.test:6379"},
+            redis_factory=lambda _env: redis,
+        )
+        await call_sticky(aff, Factory([FakeClient(sid="shared-1")]))
+        assert stored_sid(redis) == "shared-1"
 
 
 def backend_server(backend: StatefulBackend, name: str = "Playwright", **overrides: object) -> MCPServer:

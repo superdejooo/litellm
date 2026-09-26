@@ -19,6 +19,7 @@ from typing import Final, Protocol, TypeVar
 
 import httpx
 from mcp.types import CallToolRequestParams, CallToolResult, TextContent
+from redis.exceptions import RedisError
 
 from litellm._logging import verbose_logger
 from litellm.experimental_mcp_client.client import MCPClient
@@ -49,6 +50,8 @@ _STICKY_NO_IDENTITY_MARKER: Final = "mcp-sticky-no-caller-identity"
 _STICKY_SESSION_MISSING_MARKER: Final = "mcp-sticky-backend-session-missing"
 _STICKY_DEFAULT_TTL_SECONDS: Final = 1800
 _SELF_RETRYING_AUTH_TYPES: Final = frozenset({MCPAuth.oauth2_token_exchange, MCPAuth.oauth2_id_jag})
+_REDIS_TARGET_ENV_VARS: Final = ("REDIS_HOST", "REDIS_URL", "REDIS_CLUSTER_NODES", "REDIS_SENTINEL_NODES")
+_STORE_ERRORS: Final = (RedisError, OSError, ValueError)
 
 
 class SessionRefRedis(Protocol):
@@ -73,15 +76,11 @@ _T = TypeVar("_T")
 
 
 def redis_from_env(env: Mapping[str, str]) -> SessionRefRedis:
-    from redis import asyncio as redis_asyncio
+    """The proxy's shared Redis resolution: REDIS_URL, REDIS_SSL, REDIS_USERNAME, cluster, sentinel, cloud IAM."""
+    from litellm._redis import _get_redis_env_kwarg_mapping, get_redis_async_client
 
-    return redis_asyncio.Redis(
-        host=env.get("REDIS_HOST", "localhost"),
-        port=int(env.get("REDIS_PORT", "6379")),
-        password=env.get("REDIS_PASSWORD") or None,
-        socket_timeout=5,
-        socket_connect_timeout=5,
-    )
+    configured: Final = {kwarg: env[name] for name, kwarg in _get_redis_env_kwarg_mapping().items() if env.get(name)}
+    return get_redis_async_client(**{"socket_timeout": 5, "socket_connect_timeout": 5, **configured})
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,14 +329,15 @@ class BackendSessionAffinity:
         return value
 
     def _uses_redis(self) -> bool:
-        if self._env.get("REDIS_HOST"):
+        if any(self._env.get(name) for name in _REDIS_TARGET_ENV_VARS):
             return True
         if not self._local_store_warned:
             self._local_store_warned = True
             verbose_logger.error(
-                "mcp sticky: REDIS_HOST is unset, so backend sessions are kept PER WORKER. On a multi-worker "
-                "proxy calls will intermittently land in a fresh backend session. Set REDIS_HOST or unset "
-                "MCP_STATEFUL_SERVERS."
+                "mcp sticky: no Redis is configured (%s), so backend sessions are kept PER WORKER. On a "
+                "multi-worker proxy calls will intermittently land in a fresh backend session. Configure Redis "
+                "or unset MCP_STATEFUL_SERVERS.",
+                "/".join(_REDIS_TARGET_ENV_VARS),
             )
         return False
 
@@ -346,15 +346,18 @@ class BackendSessionAffinity:
             self._redis = self._redis_factory(self._env)
         return self._redis
 
-    async def _redis_op(self, operation: Callable[[SessionRefRedis], Awaitable[_T]]) -> _T:
+    async def _redis_op(self, op: str, key: str, operation: Callable[[SessionRefRedis], Awaitable[_T]]) -> _T:
         try:
             return await operation(self._redis_client())
-        except Exception as e:
+        except _STORE_ERRORS as e:
+            verbose_logger.warning(
+                "mcp sticky: redis %s for %s failed (%s: %s)", op, key, type(e).__name__, e, exc_info=True
+            )
             raise StickyStoreUnavailable(_STICKY_STORE_DOWN_MARKER) from e
 
     async def _read_raw_ref(self, key: str) -> bytes | str | None:
         if self._uses_redis():
-            return await self._redis_op(lambda redis: redis.get(key))
+            return await self._redis_op("get", key, lambda redis: redis.get(key))
         entry: Final = self._local_refs.get(key)
         if entry is None:
             return None
@@ -377,7 +380,7 @@ class BackendSessionAffinity:
     async def store_ref(self, key: str, value: str, nx: bool = False) -> bool:
         ttl: Final = self.ttl_seconds()
         if self._uses_redis():
-            return bool(await self._redis_op(lambda redis: redis.set(key, value, nx=nx, ex=ttl)))
+            return bool(await self._redis_op("set", key, lambda redis: redis.set(key, value, nx=nx, ex=ttl)))
         now: Final = self._clock()
         entry: Final = self._local_refs.get(key)
         if nx and entry is not None and entry[1] > now:
@@ -388,19 +391,19 @@ class BackendSessionAffinity:
     async def refresh_ref(self, key: str) -> None:
         """Best effort: a lost refresh only means earlier expiry, which the dead-session retry absorbs."""
         ttl: Final = self.ttl_seconds()
-        try:
-            if self._uses_redis():
-                await self._redis_client().expire(key, ttl)
-                return
+        if not self._uses_redis():
             entry: Final = self._local_refs.get(key)
             if entry is not None:
                 self._local_refs[key] = (entry[0], self._clock() + ttl)
-        except Exception as e:
-            verbose_logger.warning("mcp sticky: ttl refresh failed for %s (%s)", key, type(e).__name__)
+            return
+        try:
+            await self._redis_op("expire", key, lambda redis: redis.expire(key, ttl))
+        except StickyStoreUnavailable:
+            verbose_logger.warning("mcp sticky: ttl refresh failed for %s", key)
 
     async def drop_ref(self, key: str) -> None:
         if self._uses_redis():
-            await self._redis_op(lambda redis: redis.delete(key))
+            await self._redis_op("delete", key, lambda redis: redis.delete(key))
             return
         self._local_refs.pop(key, None)
 
