@@ -2407,6 +2407,12 @@ if MCP_AVAILABLE:
                     spend_meta["per_server_list_outcomes"] = {
                         key: outcome_wire_value(outcome) for key, outcome in server_outcomes.items()
                     }
+                else:
+                    verbose_logger.warning(
+                        "MCP list_tools: litellm_params.metadata is %s, not a dict, so the list_tools counts are "
+                        "not logged",
+                        type(metadata_dict).__name__,
+                    )
 
                 end_time: Final = datetime.now()
                 try:

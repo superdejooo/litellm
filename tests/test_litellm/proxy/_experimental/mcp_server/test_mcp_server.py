@@ -5065,6 +5065,71 @@ async def test_get_tools_from_mcp_servers_returns_tools_when_success_logging_fai
 
 
 @pytest.mark.asyncio
+async def test_get_tools_from_mcp_servers_warns_when_list_tools_counts_have_nowhere_to_go(caplog):
+    """A logging object whose request metadata is not a dict cannot carry the per-server counts; the spend
+    row must not just lose them without a trace"""
+    try:
+        from litellm.proxy._experimental.mcp_server.server import (
+            _get_tools_from_mcp_servers,
+        )
+        from litellm.proxy._types import UserAPIKeyAuth
+    except ImportError:
+        pytest.skip("MCP server not available")
+
+    server_a = MagicMock(name="server_a_obj")
+    server_a.name = "server_a"
+    server_a.alias = "server_a"
+    server_a.server_name = "server_a"
+    server_a.server_id = "a"
+    server_a.auth_type = None
+    server_a.extra_headers = None
+
+    logging_obj = MagicMock()
+    logging_obj.model_call_details = {"litellm_params": {"metadata": None}}
+    logging_obj.async_success_handler = AsyncMock()
+
+    with (
+        patch(
+            "litellm.proxy._experimental.mcp_server.server._get_allowed_mcp_servers",
+            new=AsyncMock(return_value=[server_a]),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server._prepare_mcp_server_headers",
+            return_value=(None, None),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.global_mcp_server_manager",
+        ) as mock_manager,
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.filter_tools_by_allowed_tools",
+            side_effect=lambda tools, _server: tools,
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.filter_tools_by_key_team_permissions",
+            new=AsyncMock(side_effect=lambda tools, **_: tools),
+        ),
+        patch(
+            "litellm.proxy._experimental.mcp_server.server.function_setup",
+            return_value=(logging_obj, None),
+        ),
+        caplog.at_level("WARNING", logger="LiteLLM"),
+    ):
+        mock_manager._get_tools_from_server = AsyncMock(return_value=[])
+
+        await _get_tools_from_mcp_servers(
+            user_api_key_auth=UserAPIKeyAuth(api_key="test-key", user_id="test-user"),
+            mcp_auth_header=None,
+            mcp_servers=["server_a"],
+            mcp_server_auth_headers=None,
+            log_list_tools_to_spendlogs=True,
+            list_tools_log_source="mcp_protocol",
+        )
+
+    assert "list_tools counts are not logged" in caplog.text
+    assert "NoneType" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_handle_list_tools_spend_row_carries_caller_context_without_credentials(monkeypatch):
     """An MCP-protocol tools/list spend row must carry the caller's x-litellm-tags, user-agent tag,
     client IP and a proxy_server_request, like a tools/call row, and no credential header value"""
