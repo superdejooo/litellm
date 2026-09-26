@@ -65,12 +65,15 @@ class ResponsesToCompletionBridgeHandler:
         else:
             raise ValueError("Unexpected responses stream payload")
 
-        if hidden_params:
+        # The iterator's response_cost was priced before the stream delivered usage, so it is always 0 and
+        # would short-circuit every later cost calculation on the collected response.
+        carried: Final = {key: value for key, value in (hidden_params or {}).items() if key != "response_cost"}
+        if carried:
             existing: Final = getattr(response, "_hidden_params", None)
             if not isinstance(existing, dict) or not existing:
-                setattr(response, "_hidden_params", dict(hidden_params))
+                setattr(response, "_hidden_params", carried)
             else:
-                for key, value in hidden_params.items():
+                for key, value in carried.items():
                     existing.setdefault(key, value)
         return response
 

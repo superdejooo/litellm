@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -335,3 +336,87 @@ async def test_acompletion_keeps_provider_native_model_id_through_responses(
 
     handed_model = responses_call.call_args.kwargs["model"]
     assert _upstream_model_for(handed_model, custom_llm_provider) == expected_upstream_model
+
+
+_CODEX_BASE = "http://codex.test/backend-api/codex"
+_CODEX_RATES = {
+    "mode": "responses",
+    "input_cost_per_token": 5e-06,
+    "output_cost_per_token": 3e-05,
+    "cache_read_input_token_cost": 5e-07,
+    "cache_creation_input_token_cost": 5e-06,
+}
+
+
+def _codex_sse_body() -> str:
+    completed = {
+        "id": "resp_codex",
+        "object": "response",
+        "created_at": 1,
+        "status": "completed",
+        "model": "gpt-5.5",
+        "output": [
+            {
+                "id": "msg_codex",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "pong", "annotations": []}],
+            }
+        ],
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "usage": {
+            "input_tokens": 120_000,
+            "output_tokens": 2_000,
+            "total_tokens": 122_000,
+            "input_tokens_details": {"cached_tokens": 100_000},
+            "output_tokens_details": {"reasoning_tokens": 0},
+        },
+    }
+    created = {**completed, "status": "in_progress", "output": [], "usage": None}
+    events = (
+        ("response.created", {"type": "response.created", "sequence_number": 0, "response": created}),
+        ("response.completed", {"type": "response.completed", "sequence_number": 1, "response": completed}),
+    )
+    return "".join(f"event: {name}\ndata: {json.dumps(payload)}\n\n" for name, payload in events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_async", [True, False], ids=["acompletion", "completion"])
+async def test_non_stream_bridge_over_forced_stream_bills_the_collected_usage(is_async, tmp_path, monkeypatch):
+    """ChatGPT always streams upstream, so a non-stream chat call is collected from a Responses stream.
+
+    The iterator's hidden params are stamped before any usage arrives; carrying that cost onto the
+    collected response billed the call $0 through every consumer that trusts ``_hidden_params``.
+    """
+    import httpx
+    import respx
+
+    (tmp_path / "auth.json").write_text(json.dumps({"access_token": "a", "refresh_token": "r", "expires_at": 9e9}))
+    monkeypatch.setenv("CHATGPT_TOKEN_DIR", str(tmp_path))
+    monkeypatch.setenv("CHATGPT_API_BASE", _CODEX_BASE)
+    monkeypatch.setattr(litellm, "disable_aiohttp_transport", True)
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "chatgpt/gpt-5.5",
+                "litellm_params": {"model": "chatgpt/gpt-5.5"},
+                "model_info": _CODEX_RATES,
+            }
+        ]
+    )
+    messages = [{"role": "user", "content": "bill me"}]
+
+    with respx.mock(assert_all_called=True) as upstream:
+        upstream.post(f"{_CODEX_BASE}/responses").mock(
+            return_value=httpx.Response(200, text=_codex_sse_body(), headers={"content-type": "text/event-stream"})
+        )
+        if is_async:
+            response = await router.acompletion(model="chatgpt/gpt-5.5", messages=messages)
+        else:
+            response = router.completion(model="chatgpt/gpt-5.5", messages=messages)
+
+    assert response.choices[0].message.content == "pong"
+    assert response._hidden_params["response_cost"] == pytest.approx(20_000 * 5e-06 + 100_000 * 5e-07 + 2_000 * 3e-05)
