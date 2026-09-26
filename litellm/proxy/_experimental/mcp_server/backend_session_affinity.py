@@ -12,7 +12,7 @@ import json
 import os
 import re
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
 from functools import partial
 from typing import Final, Protocol, TypeVar
@@ -202,6 +202,7 @@ class BackendSessionAffinity:
         self._redis: SessionRefRedis | None = None
         self._local_refs: Final[dict[str, tuple[str, float]]] = {}
         self._local_store_warned = False
+        self._unmatched_names_checked = False
         self._termination_tasks: Final[set[asyncio.Task[None]]] = set()
 
     def stateful_server_names(self) -> frozenset[str]:
@@ -215,10 +216,41 @@ class BackendSessionAffinity:
             for candidate in (server.server_name, server.name, server.alias)
         )
 
+    @staticmethod
+    def _transport_allows(server: MCPServer) -> bool:
+        return server.transport == MCPTransport.http and not server.spec_path
+
+    @staticmethod
+    def _auth_allows(server: MCPServer) -> bool:
+        return server.auth_type not in _SELF_RETRYING_AUTH_TYPES and not server.is_client_forwarded_token
+
+    def warn_unmatched_names_once(self, servers: Callable[[], Iterable[MCPServer]]) -> None:
+        """Warn once about MCP_STATEFUL_SERVERS names that no sticky-capable server answers to."""
+        if self._unmatched_names_checked:
+            return
+        self._unmatched_names_checked = True
+        names: Final = self.stateful_server_names()
+        if not names:
+            return
+        eligible_names: Final = frozenset(
+            candidate.strip().lower()
+            for server in servers()
+            if self._transport_allows(server) and self._auth_allows(server)
+            for candidate in (server.server_name, server.name, server.alias)
+            if isinstance(candidate, str)
+        )
+        unmatched: Final = sorted(names - eligible_names)
+        if unmatched:
+            verbose_logger.warning(
+                "mcp sticky: MCP_STATEFUL_SERVERS names %s match no streamable-http MCP server without spec_path "
+                "whose auth mode allows sticky sessions; calls to them open a fresh backend session every time",
+                ", ".join(unmatched),
+            )
+
     def applies(self, server: MCPServer) -> bool:
-        if server.transport != MCPTransport.http or server.spec_path or not self.is_sticky_server(server):
+        if not self._transport_allows(server) or not self.is_sticky_server(server):
             return False
-        if server.auth_type in _SELF_RETRYING_AUTH_TYPES or server.is_client_forwarded_token:
+        if not self._auth_allows(server):
             verbose_logger.warning(
                 "mcp sticky: %s is in MCP_STATEFUL_SERVERS but its auth mode (%s) owns the upstream 401 "
                 "retry or relay, so it keeps a fresh backend session per call",

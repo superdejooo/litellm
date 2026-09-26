@@ -5984,6 +5984,7 @@ class MCPServerManager:
             arguments=arguments,
         )
 
+        self._backend_session_affinity.warn_unmatched_names_once(lambda: self.get_registry().values())
         if self._backend_session_affinity.applies(mcp_server):
 
             async def _call_sticky_tool() -> CallToolResult:

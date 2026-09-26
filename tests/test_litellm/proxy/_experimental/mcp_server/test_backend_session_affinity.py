@@ -1458,3 +1458,23 @@ class TestManagerDispatch:
         assert text_of(other_caller) == "about:blank"
         assert backend.deletes() == []
         assert len(redis.store) == 2
+
+    @pytest.mark.asyncio
+    async def test_stateful_names_no_eligible_server_answers_to_are_warned_once(self, log_messages: list[str]) -> None:
+        """A misspelled name, or one naming an SSE or OpenAPI server, silently gives a fresh backend session
+        per call; the operator must be told which configured names never take effect."""
+        with running_backend() as backend:
+            manager: Final = MCPServerManager(
+                backend_session_affinity=make_affinity(
+                    FakeRedis(), stateful="Playwright, playwrite, legacy-sse, openapi-srv"
+                )
+            )
+            sticky: Final = backend_server(backend)
+            manager.registry[sticky.server_id] = sticky
+            manager.registry["srv-sse"] = server(server_id="srv-sse", name="legacy-sse", transport=MCPTransport.sse)
+            manager.registry["srv-openapi"] = server(server_id="srv-openapi", name="openapi-srv", spec_path="a.yaml")
+            await call_manager(manager, sticky, auth(token="t"))
+            await call_manager(manager, sticky, auth(token="t"))
+        warnings: Final = [m for m in log_messages if "MCP_STATEFUL_SERVERS" in m]
+        assert len(warnings) == 1, warnings
+        assert "legacy-sse, openapi-srv, playwrite" in warnings[0]
