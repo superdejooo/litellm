@@ -950,6 +950,42 @@ class TestMCPRequestHandler:
 
         assert declares is True
 
+    async def test_get_allowed_tools_for_server_falls_back_to_db_for_unhydrated_key(self):
+        """A key cached with object_permission_id but no loaded object_permission must still
+        have its tool restrictions enforced, not fall through to allow-all"""
+        user_api_key_auth = UserAPIKeyAuth(api_key="test-key", object_permission_id="op-1")
+        key_object_permission = self._toolset_only_object_permission([])
+        key_object_permission.mcp_tool_permissions = {"server-a": ["read_only_tool"]}
+        mock_manager = self._mock_manager_with_toolsets({})
+
+        with (
+            patch(  # test-quality-ok: the hydration fallback requires the proxy's module-global prisma client
+                "litellm.proxy.proxy_server.prisma_client", MagicMock()
+            ),
+            patch(  # test-quality-ok: stub the level's perm loader; the resolver reads module globals with no injection seam
+                "litellm.proxy.auth.auth_checks.get_object_permission",
+                AsyncMock(return_value=key_object_permission),
+            ) as get_object_permission,
+            patch.object(MCPRequestHandler, "_get_team_object_permission", AsyncMock(return_value=None)),
+            patch(
+                "litellm.proxy._experimental.mcp_server.mcp_server_manager.global_mcp_server_manager",
+                mock_manager,
+            ),
+        ):
+            allowed = await MCPRequestHandler.get_allowed_tools_for_server(
+                server_id="server-a",
+                user_api_key_auth=user_api_key_auth,
+            )
+            is_other_tool_allowed = await MCPRequestHandler.is_tool_allowed_for_server(
+                tool_name="delete_everything",
+                server_id="server-a",
+                user_api_key_auth=user_api_key_auth,
+            )
+
+        assert allowed == ["read_only_tool"]
+        assert is_other_tool_allowed is False
+        assert get_object_permission.await_args.kwargs["object_permission_id"] == "op-1"
+
     async def test_declares_toolsets_gate_swallows_team_lookup_fault(self):
         """An indeterminate fault while checking the team must answer False (org substitution
         unchanged, matching base fault behavior), never escape as deny-all"""

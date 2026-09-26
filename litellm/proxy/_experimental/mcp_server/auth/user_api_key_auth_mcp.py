@@ -2104,8 +2104,7 @@ class MCPRequestHandler:
             if _is_mcp_admitted_user_subject(user_api_key_auth):
                 return await MCPRequestHandler._resolve_admitted_subject_tools(server_id, user_api_key_auth)
 
-            # Get key and team object permissions (already loaded in main auth flow)
-            key_obj_perm: Final = MCPRequestHandler._get_key_object_permission(user_api_key_auth)
+            key_obj_perm: Final = await MCPRequestHandler._key_object_permission_hydrated(user_api_key_auth)
             team_obj_perm: Final = await MCPRequestHandler._get_team_object_permission(user_api_key_auth)
 
             # Extract tool permissions for this server. Dict keys may be
