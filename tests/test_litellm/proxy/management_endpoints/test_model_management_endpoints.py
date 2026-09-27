@@ -3863,6 +3863,8 @@ class TestModelNewPricingBillsThroughTheDBLoader:
         from litellm.integrations.custom_logger import CustomLogger
         from litellm.proxy.proxy_server import ProxyConfig
 
+        call_id: Final = str(uuid.uuid4())
+
         class LoggedCost(CustomLogger):
             def __init__(self) -> None:
                 super().__init__()
@@ -3870,6 +3872,8 @@ class TestModelNewPricingBillsThroughTheDBLoader:
                 self.logged = asyncio.Event()
 
             async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+                if kwargs.get("litellm_call_id") != call_id:
+                    return
                 self.costs = (*self.costs, kwargs["standard_logging_object"]["response_cost"])
                 self.logged.set()
 
@@ -3886,12 +3890,14 @@ class TestModelNewPricingBillsThroughTheDBLoader:
                 upstream.post(f"{_PRICED_UPSTREAM}/v1/messages").mock(
                     return_value=httpx.Response(200, json=dict(_ANTHROPIC_MESSAGE))
                 )
-                await router.aanthropic_messages(model=row.model_name, messages=messages, max_tokens=64)
+                await router.aanthropic_messages(
+                    model=row.model_name, messages=messages, max_tokens=64, litellm_call_id=call_id
+                )
             else:
                 upstream.post(f"{_PRICED_UPSTREAM}/v1/responses").mock(
                     return_value=httpx.Response(200, json=dict(_RESPONSES_RESULT))
                 )
-                await router.acompletion(model=row.model_name, messages=messages)
+                await router.acompletion(model=row.model_name, messages=messages, litellm_call_id=call_id)
         await asyncio.wait_for(logger.logged.wait(), timeout=10)
         assert len(logger.costs) == 1
         return logger.costs[0]

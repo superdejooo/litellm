@@ -344,20 +344,24 @@ async def test_rendered_config_prompt_is_linked_on_the_langfuse_otel_span(monkey
         rendered = await ProxyLogging(user_api_key_cache=UserApiKeyCache()).pre_call_hook(
             user_api_key_dict=UserAPIKeyAuth(), data=data, call_type="acompletion"
         )
-        await litellm.acompletion(**rendered, mock_response="A launch party.")
+        completion: Final = await litellm.acompletion(**rendered, mock_response="A launch party.")
+
+    def generation_spans_of_this_call() -> list:
+        return [
+            span
+            for span in exporter.get_finished_spans()
+            if span.attributes.get("langfuse.observation.type") == "generation"
+            and span.attributes.get("llm.response.id") == completion.id
+        ]
 
     for _ in range(50):
-        if exporter.get_finished_spans():
+        if generation_spans_of_this_call():
             break
         await asyncio.sleep(0.1)
     langfuse_client_init.cache_clear()
 
     assert rendered["messages"][0] == {"role": "system", "content": "Describe the launch"}
-    generation_spans = [
-        span
-        for span in exporter.get_finished_spans()
-        if span.attributes.get("langfuse.observation.type") == "generation"
-    ]
+    generation_spans: Final = generation_spans_of_this_call()
     assert len(generation_spans) == 1
     assert generation_spans[0].attributes["langfuse.observation.prompt.name"] == "events/description-create"
     assert generation_spans[0].attributes["langfuse.observation.prompt.version"] == 7
