@@ -361,3 +361,121 @@ async def test_rendered_config_prompt_is_linked_on_the_langfuse_otel_span(monkey
     assert len(generation_spans) == 1
     assert generation_spans[0].attributes["langfuse.observation.prompt.name"] == "events/description-create"
     assert generation_spans[0].attributes["langfuse.observation.prompt.version"] == 7
+
+
+_DEFAULT_PROJECT_PROMPT_URL: Final = r"^http://default-project\.test/api/public/v2/prompts/"
+_PROMPT_ENTRY_PROJECT_PROMPT_URL: Final = r"^http://prompt-entry-project\.test/api/public/v2/prompts/"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "dynamic_callback_params",
+    (
+        {},
+        {
+            "langfuse_public_key": "pk-default-project",
+            "langfuse_secret_key": "sk-default-project",
+            "langfuse_host": "http://default-project.test",
+        },
+    ),
+    ids=("no-request-credentials", "team-callback-credentials"),
+)
+async def test_config_prompt_renders_from_the_project_its_prompt_entry_names(monkeypatch, dynamic_callback_params):
+    respx = pytest.importorskip("respx")
+    pytest.importorskip("langfuse.client")
+    from litellm.integrations.langfuse import prompt_initializer
+    from litellm.types.prompts.init_prompts import PromptLiteLLMParams, PromptSpec
+
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-default-project")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-default-project")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://default-project.test")
+    monkeypatch.setenv("PROMPT_ENTRY_LANGFUSE_HOST", "http://prompt-entry-project.test")
+    langfuse_client_init.cache_clear()
+    litellm_params: Final = PromptLiteLLMParams(
+        prompt_id="events/summary",
+        prompt_integration="langfuse",
+        langfuse_public_key="pk-prompt-entry-project",
+        langfuse_secret_key="sk-prompt-entry-project",
+        langfuse_host="os.environ/PROMPT_ENTRY_LANGFUSE_HOST",
+    )
+    spec: Final = PromptSpec(prompt_id="events/summary", litellm_params=litellm_params)
+    manager: Final = prompt_initializer(litellm_params, spec)
+    prompt_body: Final = {
+        "name": "events/summary",
+        "version": 3,
+        "prompt": "Summarise {{event}}",
+        "config": {},
+        "labels": ["production"],
+        "tags": [],
+        "type": "text",
+    }
+
+    with respx.mock(assert_all_called=False) as langfuse_api:
+        default_project: Final = langfuse_api.get(url__regex=_DEFAULT_PROJECT_PROMPT_URL).mock(
+            return_value=httpx.Response(200, json={**prompt_body, "prompt": "wrong project"})
+        )
+        prompt_entry_project: Final = langfuse_api.get(url__regex=_PROMPT_ENTRY_PROJECT_PROMPT_URL).mock(
+            return_value=httpx.Response(200, json=prompt_body)
+        )
+        _, messages, _ = await manager.async_get_chat_completion_prompt(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            non_default_params={},
+            prompt_id="events/summary",
+            prompt_variables={"event": "launch"},
+            dynamic_callback_params=dynamic_callback_params,
+            litellm_logging_obj=SimpleNamespace(model_call_details={}),
+        )
+    langfuse_client_init.cache_clear()
+
+    assert messages[0] == {"role": "system", "content": "Summarise launch"}
+    assert prompt_entry_project.called
+    assert not default_project.called
+
+
+@pytest.mark.asyncio
+async def test_callback_prompt_manager_renders_from_the_project_the_request_names(monkeypatch):
+    respx = pytest.importorskip("respx")
+    pytest.importorskip("langfuse.client")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-default-project")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-default-project")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://default-project.test")
+    langfuse_client_init.cache_clear()
+    manager: Final = LangfusePromptManagement()
+
+    with respx.mock(assert_all_called=False) as langfuse_api:
+        default_project: Final = langfuse_api.get(url__regex=_DEFAULT_PROJECT_PROMPT_URL).mock(
+            return_value=httpx.Response(500)
+        )
+        request_project: Final = langfuse_api.get(url__regex=_PROMPT_ENTRY_PROJECT_PROMPT_URL).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "name": "events/summary",
+                    "version": 3,
+                    "prompt": "Summarise {{event}}",
+                    "config": {},
+                    "labels": ["production"],
+                    "tags": [],
+                    "type": "text",
+                },
+            )
+        )
+        _, messages, _ = await manager.async_get_chat_completion_prompt(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "hi"}],
+            non_default_params={},
+            prompt_id="events/summary",
+            prompt_variables={"event": "launch"},
+            dynamic_callback_params={
+                "langfuse_public_key": "pk-request-project",
+                "langfuse_secret_key": "sk-request-project",
+                "langfuse_host": "http://prompt-entry-project.test",
+            },
+            litellm_logging_obj=SimpleNamespace(model_call_details={}),
+        )
+    langfuse_client_init.cache_clear()
+
+    assert messages[0] == {"role": "system", "content": "Summarise launch"}
+    assert request_project.called
+    assert not default_project.called

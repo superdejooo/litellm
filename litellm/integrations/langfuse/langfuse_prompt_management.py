@@ -154,6 +154,17 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
     def integration_name(self):
         return "langfuse"
 
+    def _langfuse_client_for(self, dynamic_callback_params: StandardCallbackDynamicParams) -> LangfuseClass:
+        """The request's own Langfuse project when it names one, else the project this manager was built for."""
+        if (
+            dynamic_callback_params.get("langfuse_public_key") is None
+            and dynamic_callback_params.get("langfuse_secret") is None
+            and dynamic_callback_params.get("langfuse_secret_key") is None
+            and dynamic_callback_params.get("langfuse_host") is None
+        ):
+            return self.Langfuse
+        return _langfuse_client_for_request(dynamic_callback_params)
+
     def _get_prompt_from_id(
         self,
         langfuse_prompt_id: str,
@@ -223,7 +234,7 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
 
         langfuse_prompt_client: Final = self._get_prompt_from_id(
             langfuse_prompt_id=prompt_id,
-            langfuse_client=_langfuse_client_for_request(dynamic_callback_params),
+            langfuse_client=self._langfuse_client_for(dynamic_callback_params),
             prompt_label=prompt_label,
             prompt_version=prompt_version,
         )
@@ -260,7 +271,7 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
             return False
         langfuse_prompt_client: Final = self._get_prompt_from_id(
             langfuse_prompt_id=prompt_id,
-            langfuse_client=_langfuse_client_for_request(dynamic_callback_params),
+            langfuse_client=self._langfuse_client_for(dynamic_callback_params),
         )
         return langfuse_prompt_client is not None
 
@@ -278,7 +289,7 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
 
         langfuse_prompt_client: Final = self._get_prompt_from_id(
             langfuse_prompt_id=prompt_id,
-            langfuse_client=_langfuse_client_for_request(dynamic_callback_params),
+            langfuse_client=self._langfuse_client_for(dynamic_callback_params),
             prompt_label=prompt_label,
             prompt_version=prompt_version,
         )
@@ -387,6 +398,9 @@ class LangfusePromptManagement(LangFuseLogger, PromptManagementBase, CustomLogge
 
 class LangfusePromptOnlyManagement(LangfusePromptManagement):
     """Langfuse prompt manager built from a `prompts:` entry; renders prompts and never emits native traces."""
+
+    def _langfuse_client_for(self, dynamic_callback_params: StandardCallbackDynamicParams) -> LangfuseClass:
+        return self.Langfuse
 
     def log_success_event(self, kwargs, response_obj, start_time, end_time):
         return None
