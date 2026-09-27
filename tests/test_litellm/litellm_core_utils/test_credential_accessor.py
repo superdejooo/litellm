@@ -1,4 +1,5 @@
 import logging
+import os
 from pathlib import Path
 from typing import Final
 
@@ -26,10 +27,11 @@ class FakeClock:
 
 
 @pytest.fixture
-def clock(monkeypatch: pytest.MonkeyPatch) -> FakeClock:
+def clock(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeClock:
     fake = FakeClock()
     monkeypatch.setattr(credential_accessor, "monotonic", fake)
     monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_TTL_SECONDS", 5.0)
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     return fake
 
 
@@ -186,6 +188,83 @@ def test_a_failed_file_credential_keeps_its_path_in_the_log_and_out_of_the_error
     assert "No such file" not in str(raised.value)
     assert raised.value.__cause__ is None
     assert str(token_file) in caplog.text
+
+
+@pytest.fixture
+def allowed_dir(monkeypatch: pytest.MonkeyPatch, clock: FakeClock, tmp_path: Path) -> Path:
+    root: Final = tmp_path / "allowed"
+    root.mkdir()
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(root),))
+    return root
+
+
+@pytest.fixture
+def outside_secret(tmp_path: Path) -> Path:
+    secret: Final = tmp_path / "outside" / "secret"
+    secret.parent.mkdir()
+    secret.write_text("host-secret-not-a-credential", encoding="utf-8")
+    return secret
+
+
+def _outside_ref_via(kind: str, allowed_dir: Path, outside_secret: Path) -> str:
+    if kind == "symlink":
+        (allowed_dir / "link").symlink_to(outside_secret)
+        return _ref(allowed_dir / "link")
+    if kind == "traversal":
+        return FILE_CREDENTIAL_SCHEME + f"{allowed_dir}/../outside/secret"
+    if kind == "sibling-prefix":
+        sibling: Final = allowed_dir.with_name(allowed_dir.name + "-evil")
+        sibling.mkdir()
+        (sibling / "secret").write_text("host-secret-not-a-credential", encoding="utf-8")
+        return _ref(sibling / "secret")
+    return _ref(outside_secret)
+
+
+@pytest.mark.parametrize("kind", ["absolute", "symlink", "traversal", "sibling-prefix"])
+def test_a_file_credential_outside_the_allowed_dirs_is_refused(
+    allowed_dir: Path, outside_secret: Path, caplog: pytest.LogCaptureFixture, kind: str
+) -> None:
+    ref: Final = _outside_ref_via(kind, allowed_dir, outside_secret)
+
+    with caplog.at_level(logging.ERROR, logger="LiteLLM"), pytest.raises(ValueError, match="unreadable") as raised:
+        resolve_file_credential(ref)
+
+    assert "host-secret" not in str(raised.value)
+    assert "outside" not in str(raised.value)
+    assert "FILE_CREDENTIAL_ALLOWED_DIRS" in caplog.text
+    assert ref.removeprefix(FILE_CREDENTIAL_SCHEME) in caplog.text
+
+
+def test_a_symlink_inside_the_allowed_dirs_to_a_file_inside_them_resolves(allowed_dir: Path) -> None:
+    (allowed_dir / "accounts").mkdir()
+    (allowed_dir / "accounts" / "current").write_text("sk-current-account", encoding="utf-8")
+    (allowed_dir / "token").symlink_to(allowed_dir / "accounts" / "current")
+
+    assert resolve_file_credential(_ref(allowed_dir / "token")) == "sk-current-account"
+
+
+def test_no_file_credential_resolves_when_no_dir_is_allowed(
+    monkeypatch: pytest.MonkeyPatch, clock: FakeClock, token_file: Path
+) -> None:
+    token_file.write_text("sk-would-be-valid", encoding="utf-8")
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", ())
+
+    with pytest.raises(ValueError, match="unreadable"):
+        resolve_file_credential(_ref(token_file))
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, ()),
+        ("", ()),
+        ("relative/dir", ()),
+        (f"relative{os.pathsep}/data", ("/data",)),
+        (f"/data{os.pathsep}{os.pathsep}/srv/keys/../creds", ("/data", "/srv/creds")),
+    ],
+)
+def test_file_credential_allowed_dirs_keep_only_absolute_entries(raw: str | None, expected: tuple[str, ...]) -> None:
+    assert credential_accessor._parse_file_credential_allowed_dirs(raw) == expected
 
 
 def _load_credential(monkeypatch: pytest.MonkeyPatch, credential_values: dict[str, str]) -> None:

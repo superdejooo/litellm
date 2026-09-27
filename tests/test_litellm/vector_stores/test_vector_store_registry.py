@@ -1,4 +1,5 @@
 import json
+import os
 from unittest.mock import patch
 
 import httpx
@@ -72,7 +73,10 @@ def test_get_credentials_for_vector_store():
 
 
 def test_get_credentials_for_vector_store_reads_a_file_credential(monkeypatch, tmp_path):
+    from litellm.litellm_core_utils import credential_accessor
     from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
 
     key_file = tmp_path / "key"
     key_file.write_text("sk-from-file", encoding="utf-8")

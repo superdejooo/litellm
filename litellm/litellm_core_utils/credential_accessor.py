@@ -42,6 +42,18 @@ def _parse_file_credential_ttl_seconds(raw: str | None) -> float:
 FILE_CREDENTIAL_TTL_SECONDS: Final = _parse_file_credential_ttl_seconds(os.getenv("FILE_CREDENTIAL_TTL_SECONDS"))
 
 
+def _parse_file_credential_allowed_dirs(raw: str | None) -> tuple[str, ...]:
+    """Called once, at import. Unset, empty or relative entries allow nothing, so no ``file://`` ref resolves."""
+    entries: Final = tuple(entry for entry in (raw or "").split(os.pathsep) if entry)
+    relative: Final = tuple(entry for entry in entries if not os.path.isabs(entry))
+    if relative:
+        verbose_logger.error("FILE_CREDENTIAL_ALLOWED_DIRS ignores entries that are not absolute paths: %r", relative)
+    return tuple(os.path.realpath(entry) for entry in entries if os.path.isabs(entry))
+
+
+FILE_CREDENTIAL_ALLOWED_DIRS: Final = _parse_file_credential_allowed_dirs(os.getenv("FILE_CREDENTIAL_ALLOWED_DIRS"))
+
+
 class _CachedFileCredential(NamedTuple):
     expires_at: float
     value: str
@@ -55,25 +67,43 @@ def is_file_credential_ref(value: object) -> bool:
     return isinstance(value, str) and value.startswith(FILE_CREDENTIAL_SCHEME)
 
 
+def _is_inside_an_allowed_dir(real_path: str) -> bool:
+    return any(os.path.commonpath((real_path, root)) == root for root in FILE_CREDENTIAL_ALLOWED_DIRS)
+
+
+_UNREADABLE_FILE_CREDENTIAL_MESSAGE: Final = (
+    "file credential unreadable: the credential file must exist and be readable; there is no env fallback"
+)
+
+
 def resolve_file_credential(ref: str) -> str:
     """Read a ``file:///abs/path`` credential, cached for FILE_CREDENTIAL_TTL_SECONDS so a swapped file is picked up.
 
-    Raises ValueError when the file is missing, unreadable or empty; the ref itself is never returned.
+    Only files inside FILE_CREDENTIAL_ALLOWED_DIRS (after resolving symlinks and ``..``) are read.
+    Raises ValueError when the file is outside them, missing, unreadable or empty; the ref itself is never returned.
     """
     path: Final = ref.removeprefix(FILE_CREDENTIAL_SCHEME)
     now: Final = monotonic()
     cached: Final = _file_credential_cache.get(path)
     if cached is not None and now < cached.expires_at:
         return cached.value
+    real_path: Final = os.path.realpath(path)
+    if not _is_inside_an_allowed_dir(real_path):
+        verbose_logger.error(
+            "file credential %s (resolves to %s) is outside FILE_CREDENTIAL_ALLOWED_DIRS=%r; refusing to read it",
+            path,
+            real_path,
+            FILE_CREDENTIAL_ALLOWED_DIRS,
+        )
+        # Same message as an unreadable file, so a refused path cannot be told apart from a missing one
+        raise ValueError(_UNREADABLE_FILE_CREDENTIAL_MESSAGE)
     try:
-        with open(path, encoding="utf-8") as credential_file:
+        with open(real_path, encoding="utf-8") as credential_file:
             value: Final = credential_file.read().strip()
     except (OSError, UnicodeDecodeError) as e:
         verbose_logger.error("file credential %s unreadable: %s", path, e)
         # The message reaches API callers, so the host path and OS error stay in the log above
-        raise ValueError(
-            "file credential unreadable: the credential file must exist and be readable; there is no env fallback"
-        ) from None
+        raise ValueError(_UNREADABLE_FILE_CREDENTIAL_MESSAGE) from None
     if not value:
         verbose_logger.error("file credential %s is empty", path)
         raise ValueError("file credential is empty: refusing to send an empty credential; there is no env fallback")

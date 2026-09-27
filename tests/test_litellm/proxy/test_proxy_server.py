@@ -13292,6 +13292,7 @@ async def test_token_counter_sends_the_current_file_credential_without_pinning_i
     clock: Final = [1000.0]
     monkeypatch.setattr(credential_accessor, "monotonic", lambda: clock[0])
     monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_TTL_SECONDS", 5.0)
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     token_file: Final = tmp_path / "token"
     token_file.write_text("sk-ant-api03-before-swap\n", encoding="utf-8")
     monkeypatch.setattr(

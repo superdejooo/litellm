@@ -4609,6 +4609,9 @@ def test_resolve_model_not_in_any_config():
 
 
 def test_apply_overrides_reads_a_file_credential(monkeypatch, tmp_path):
+    from litellm.litellm_core_utils import credential_accessor
+
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     key_file = tmp_path / "key"
     key_file.write_text("key-from-file\n", encoding="utf-8")
     monkeypatch.setattr(litellm, "enable_model_config_credential_overrides", True)

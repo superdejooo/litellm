@@ -1,3 +1,4 @@
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -434,11 +435,13 @@ def test_wildcard_credential_hydration_preserves_deployment_params(
 
 def test_wildcard_credential_hydration_reads_a_file_credential(monkeypatch, tmp_path):
     import litellm
+    from litellm.litellm_core_utils import credential_accessor
     from litellm.proxy.auth import model_checks
     from litellm.proxy.auth.model_checks import get_known_models_from_wildcard
     from litellm.types.router import LiteLLM_Params
     from litellm.types.utils import CredentialItem
 
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     key_file = tmp_path / "key"
     key_file.write_text("sk-from-file", encoding="utf-8")
     monkeypatch.setattr(

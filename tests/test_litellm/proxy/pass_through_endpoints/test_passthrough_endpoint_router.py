@@ -1,4 +1,5 @@
 import logging
+import os
 from types import MappingProxyType
 from typing import Final
 
@@ -125,6 +126,7 @@ def test_file_credential_is_resolved_instead_of_returned_verbatim(monkeypatch, t
     clock = [1000.0]
     monkeypatch.setattr(credential_accessor, "monotonic", lambda: clock[0])
     monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_TTL_SECONDS", 5.0)
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     key_file = tmp_path / "key"
     key_file.write_text("sk-ant-key-a\n", encoding="utf-8")
     CredentialAccessor.upsert_credentials([_credential("cred_file", f"file://{key_file}")])
@@ -152,7 +154,10 @@ def test_file_credential_is_resolved_instead_of_returned_verbatim(monkeypatch, t
         passthrough_router.get_credentials(custom_llm_provider="anthropic", region_name=None, **_ANTHROPIC_ROUTE)
 
 
-def test_unreadable_file_credential_of_a_skipped_deployment_does_not_fail_the_lookup(tmp_path):
+def test_unreadable_file_credential_of_a_skipped_deployment_does_not_fail_the_lookup(monkeypatch, tmp_path):
+    from litellm.litellm_core_utils import credential_accessor
+
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     CredentialAccessor.upsert_credentials(
         [
             CredentialItem(

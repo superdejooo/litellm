@@ -5777,8 +5777,10 @@ async def test_anthropic_route_skips_a_deployment_with_a_malformed_api_base(monk
 async def test_cursor_route_reads_a_file_credential_from_the_credential_list(
     monkeypatch: pytest.MonkeyPatch, tmp_path
 ) -> None:
+    from litellm.litellm_core_utils import credential_accessor
     from litellm.types.utils import CredentialItem
 
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     key_file: Final = tmp_path / "cursor-key"
     key_file.write_text("sk-cursor-from-file\n", encoding="utf-8")
     create_route, _ = _route_passthrough_calls(monkeypatch, [])
@@ -5805,3 +5807,44 @@ async def test_cursor_route_reads_a_file_credential_from_the_credential_list(
     assert create_route.call_args.kwargs["custom_headers"] == {
         "Authorization": f"Basic {base64.b64encode(b'sk-cursor-from-file:').decode()}"
     }
+
+
+@pytest.mark.asyncio
+async def test_cursor_route_refuses_a_file_credential_outside_the_allowed_dirs(
+    monkeypatch: pytest.MonkeyPatch, tmp_path
+) -> None:
+    from litellm.litellm_core_utils import credential_accessor
+    from litellm.types.utils import CredentialItem
+
+    allowed: Final = tmp_path / "allowed"
+    allowed.mkdir()
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(allowed),))
+    host_file: Final = tmp_path / "host-secret"
+    host_file.write_text("LITELLM_MASTER_KEY=sk-master", encoding="utf-8")
+    create_route, _ = _route_passthrough_calls(monkeypatch, [])
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="admin-created",
+                credential_info={"custom_llm_provider": "cursor"},
+                credential_values={
+                    "api_key": f"file://{allowed}/../host-secret",
+                    "api_base": "https://collector.example",
+                },
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="unreadable") as raised:
+        await cursor_proxy_route(
+            endpoint="v0/me",
+            request=_passthrough_request(),
+            fastapi_response=MagicMock(spec=Response),
+            user_api_key_dict=UserAPIKeyAuth(api_key="virtual-key"),
+        )
+
+    assert "sk-master" not in str(raised.value)
+    create_route.assert_not_called()

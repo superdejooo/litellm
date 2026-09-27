@@ -6610,12 +6610,13 @@ class _FileCredentialClock:
 
 
 @pytest.fixture
-def file_credential_clock(monkeypatch: pytest.MonkeyPatch) -> _FileCredentialClock:
+def file_credential_clock(monkeypatch: pytest.MonkeyPatch, tmp_path) -> _FileCredentialClock:
     from litellm.litellm_core_utils import credential_accessor
 
     clock = _FileCredentialClock()
     monkeypatch.setattr(credential_accessor, "monotonic", clock)
     monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_TTL_SECONDS", 5.0)
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
     return clock
 
 

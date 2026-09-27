@@ -5550,7 +5550,10 @@ def test_get_deployment_credentials_with_provider_resolves_credential_name():
 
 
 def test_get_deployment_credentials_with_provider_reads_a_file_credential(monkeypatch, tmp_path):
+    from litellm.litellm_core_utils import credential_accessor
     from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
 
     key_file = tmp_path / "key"
     key_file.write_text("sk-from-file\n", encoding="utf-8")
