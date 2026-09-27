@@ -471,6 +471,71 @@ def test_wildcard_credential_hydration_reads_a_file_credential(monkeypatch, tmp_
     assert api_keys_sent == ["sk-from-file"]
 
 
+def test_an_unreadable_file_credential_leaves_the_rest_of_the_model_list_intact(monkeypatch, tmp_path, caplog):
+    import logging
+
+    import litellm
+    from litellm.litellm_core_utils import credential_accessor
+    from litellm.proxy.auth import model_checks
+    from litellm.proxy.auth.model_checks import get_complete_model_list
+    from litellm.types.utils import CredentialItem
+
+    monkeypatch.setattr(credential_accessor, "FILE_CREDENTIAL_ALLOWED_DIRS", (os.path.realpath(tmp_path),))
+    (tmp_path / "anthropic-key").write_text("sk-ant-from-file", encoding="utf-8")
+    monkeypatch.setattr(
+        litellm,
+        "credential_list",
+        [
+            CredentialItem(
+                credential_name="openai-broken",
+                credential_info={},
+                credential_values={"api_key": f"file://{tmp_path / 'missing-key'}"},
+            ),
+            CredentialItem(
+                credential_name="anthropic-ok",
+                credential_info={},
+                credential_values={"api_key": f"file://{tmp_path / 'anthropic-key'}"},
+            ),
+        ],
+    )
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "openai/*",
+                "litellm_params": {"model": "openai/*", "litellm_credential_name": "openai-broken"},
+            },
+            {
+                "model_name": "anthropic/*",
+                "litellm_params": {"model": "anthropic/*", "litellm_credential_name": "anthropic-ok"},
+            },
+        ]
+    )
+    listed_with = {}
+
+    def fake_get_provider_models(provider, litellm_params=None):
+        listed_with[provider] = (litellm_params.api_key, litellm_params.litellm_credential_name)
+        return [f"{provider}-model"]
+
+    monkeypatch.setattr(model_checks, "get_provider_models", fake_get_provider_models)
+
+    with caplog.at_level(logging.ERROR, logger="LiteLLM Proxy"):
+        models = get_complete_model_list(
+            key_models=[],
+            team_models=[],
+            proxy_model_list=["openai/*", "anthropic/*"],
+            user_model=None,
+            infer_model_from_keys=False,
+            llm_router=router,
+        )
+
+    assert {"openai-model", "anthropic-model"} <= set(models)
+    assert listed_with == {"openai": (None, "openai-broken"), "anthropic": ("sk-ant-from-file", None)}
+    proxy_errors = [r.getMessage() for r in caplog.records if r.name == "LiteLLM Proxy" and r.levelno == logging.ERROR]
+    assert len(proxy_errors) == 1
+    assert "openai-broken" in proxy_errors[0]
+    assert str(tmp_path) not in proxy_errors[0]
+
+
 def test_wildcard_custom_prefix_does_not_stack_provider_prefix(monkeypatch):
     """Regression test for #30358.
 

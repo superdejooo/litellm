@@ -250,7 +250,15 @@ def _hydrate_litellm_credential_name(
     if litellm_params is None or litellm_params.litellm_credential_name is None:
         return litellm_params
 
-    credential_values: Final = CredentialAccessor.get_credential_values(litellm_params.litellm_credential_name)
+    try:
+        credential_values: Final = CredentialAccessor.get_credential_values(litellm_params.litellm_credential_name)
+    except ValueError:
+        verbose_proxy_logger.error(
+            "Listing wildcard models for %s without credential %s: one of its file credentials is unreadable",
+            litellm_params.model,
+            litellm_params.litellm_credential_name,
+        )
+        return litellm_params
     if not credential_values:
         return litellm_params
 
