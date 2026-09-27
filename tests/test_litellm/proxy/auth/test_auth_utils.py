@@ -28,6 +28,7 @@ from litellm.proxy.auth.auth_utils import (
     get_project_model_tpm_limit,
     get_request_route_template,
     is_request_body_safe,
+    pre_db_read_auth_checks,
 )
 
 
@@ -3586,3 +3587,38 @@ class TestIsRequestBodySafeBlocksAwsIdentitySelectors:
             )
             is True
         )
+
+
+def _post_request(route: str) -> Request:
+    return Request({"type": "http", "method": "POST", "path": route, "headers": [], "client": ("127.0.0.1", 50000)})
+
+
+class TestCallerChosenCredentialName:
+    """A caller-supplied ``litellm_credential_name`` on an inference route would swap another stored credential into
+    the deployment's call and send its secret to the deployment's host."""
+
+    @pytest.mark.parametrize("route", ["/chat/completions", "/v1/messages", "/v1/responses", "/v1/embeddings"])
+    async def test_inference_route_rejects_it(self, route: str) -> None:
+        with patch("litellm.proxy.proxy_server.general_settings", {}):
+            with pytest.raises(ValueError, match="litellm_credential_name is not allowed in request body"):
+                await pre_db_read_auth_checks(
+                    request=_post_request(route),
+                    request_data={"model": "glm-5.3", "litellm_credential_name": "anthropic_oauth"},
+                    route=route,
+                )
+
+    async def test_vector_store_creation_still_names_its_credential(self) -> None:
+        with patch("litellm.proxy.proxy_server.general_settings", {}):
+            await pre_db_read_auth_checks(
+                request=_post_request("/vector_store/new"),
+                request_data={"vector_store_id": "vs-1", "litellm_credential_name": "openai-cred"},
+                route="/vector_store/new",
+            )
+
+    async def test_proxy_wide_client_side_credentials_opt_in_allows_it(self) -> None:
+        with patch("litellm.proxy.proxy_server.general_settings", {"allow_client_side_credentials": True}):
+            await pre_db_read_auth_checks(
+                request=_post_request("/chat/completions"),
+                request_data={"model": "glm-5.3", "litellm_credential_name": "anthropic_oauth"},
+                route="/chat/completions",
+            )

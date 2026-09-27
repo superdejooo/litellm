@@ -369,19 +369,25 @@ _BANNED_REQUEST_BODY_PARAMS: Final[tuple[str, ...]] = (
     *sorted(CustomPricingLiteLLMParams.model_fields.keys()),
 )
 
+# The stored credential a deployment authenticates with. On an inference route a caller-supplied name swaps in any
+# credential on the proxy and sends its secret to the deployment's host. Management routes (vector store creation)
+# set it legitimately, so it is banned on inference routes only.
+_BANNED_INFERENCE_REQUEST_BODY_PARAMS: Final[tuple[str, ...]] = ("litellm_credential_name",)
+
 
 def _check_banned_params(
     body: dict,
     general_settings: dict,
     llm_router: Router | None,
     model: str,
+    banned_params: tuple[str, ...] = _BANNED_REQUEST_BODY_PARAMS,
 ) -> None:
     """Raise ``ValueError`` if ``body`` carries a banned param without admin opt-in.
 
     Shared between the root-level check and the nested-config check so a
     new banned param only needs to be added in one place.
     """
-    for param in _BANNED_REQUEST_BODY_PARAMS:
+    for param in banned_params:
         if param not in body:
             continue
         if general_settings.get("allow_client_side_credentials") is True:
@@ -581,6 +587,16 @@ async def pre_db_read_auth_checks(
         llm_router=llm_router,
         model=request_data.get("model", ""),  # [TODO] use model passed in url as well (azure openai routes)
     )
+    from litellm.proxy.auth.route_checks import RouteChecks
+
+    if RouteChecks.is_llm_api_route(route=route):
+        _check_banned_params(
+            request_data,
+            general_settings,
+            llm_router,
+            request_data.get("model", ""),
+            _BANNED_INFERENCE_REQUEST_BODY_PARAMS,
+        )
 
     # Check 3. Check if IP address is allowed
     is_valid_ip, passed_in_ip = _check_valid_ip(
