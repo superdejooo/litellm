@@ -1805,3 +1805,101 @@ def test_langfuse_deployment_environment_fallback_never_raises(monkeypatch, env_
         langfuse_host="https://test.langfuse.com",
     )
     assert logger.langfuse_environment == expected
+
+
+_REQUEST_HOST: Final = "http://request-project.test"
+
+
+@pytest.fixture
+def operator_langfuse_env(monkeypatch):
+    pytest.importorskip("respx")
+    pytest.importorskip("langfuse.client")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-operator-synthetic")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-operator-synthetic")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://operator-project.test")
+    monkeypatch.setenv("LANGFUSE_MOCK", "false")
+    monkeypatch.delenv("UPSTREAM_LANGFUSE_SECRET_KEY", raising=False)
+    monkeypatch.setattr(litellm, "initialized_langfuse_clients", 0)
+
+
+def _request_logger(request_credentials: dict) -> LangFuseLogger:
+    from litellm.integrations.langfuse.langfuse_handler import LangFuseHandler
+    from litellm.litellm_core_utils.specialty_caches.dynamic_logging_cache import DynamicLoggingCache
+
+    return LangFuseHandler.get_langfuse_logger_for_request(
+        standard_callback_dynamic_params={**request_credentials, "langfuse_host": _REQUEST_HOST},
+        in_memory_dynamic_logger_cache=DynamicLoggingCache(),
+    )
+
+
+@pytest.mark.parametrize(
+    "request_credentials",
+    (
+        {},
+        {"langfuse_public_key": "pk-request-synthetic"},
+        {"langfuse_secret": "sk-request-synthetic"},
+        {"langfuse_secret_key": "sk-request-synthetic"},
+        {"langfuse_public_key": "", "langfuse_secret_key": "sk-request-synthetic"},
+        {"langfuse_public_key": "pk-request-synthetic", "langfuse_secret": ""},
+        {"langfuse_public_key": None, "langfuse_secret": None, "langfuse_secret_key": None},
+    ),
+    ids=(
+        "no-keys",
+        "public-only",
+        "secret-only",
+        "secret-key-alias-only",
+        "empty-public",
+        "empty-secret",
+        "explicit-none",
+    ),
+)
+def test_request_logger_with_incomplete_credentials_never_sends_operator_keys(
+    operator_langfuse_env, request_credentials
+):
+    import httpx
+    import respx
+
+    with respx.mock(assert_all_called=False) as langfuse_api:
+        any_request: Final = langfuse_api.route().mock(return_value=httpx.Response(404))
+        with pytest.raises(ValueError) as error:
+            _request_logger(request_credentials)
+
+    assert "Missing: langfuse_" in str(error.value)
+    assert "synthetic" not in str(error.value)
+    assert "request-project.test" not in str(error.value)
+    assert not any_request.called
+    assert litellm.initialized_langfuse_clients == 0
+
+
+@pytest.mark.parametrize(
+    ("request_credentials", "expected_public_key"),
+    (
+        (
+            {"langfuse_public_key": "pk-request-synthetic", "langfuse_secret": "sk-request-synthetic"},
+            "pk-request-synthetic",
+        ),
+        (
+            {"langfuse_public_key": "pk-request-synthetic", "langfuse_secret_key": "sk-request-synthetic"},
+            "pk-request-synthetic",
+        ),
+        ({"langfuse_public_key": " ", "langfuse_secret": "sk-request-synthetic"}, " "),
+    ),
+    ids=("secret", "secret-key-alias", "whitespace-public-is-used-verbatim"),
+)
+def test_request_logger_with_complete_credentials_authenticates_as_the_request(
+    operator_langfuse_env, request_credentials, expected_public_key
+):
+    import base64
+
+    import httpx
+    import respx
+
+    with respx.mock(assert_all_called=False) as langfuse_api:
+        request_project: Final = langfuse_api.get(url__regex=r"^http://request-project\.test/api/public/projects").mock(
+            return_value=httpx.Response(404)
+        )
+        logger: Final = _request_logger(request_credentials)
+    logger.Langfuse.shutdown()
+
+    expected_auth: Final = base64.b64encode(f"{expected_public_key}:sk-request-synthetic".encode()).decode()
+    assert request_project.calls.last.request.headers["authorization"] == f"Basic {expected_auth}"

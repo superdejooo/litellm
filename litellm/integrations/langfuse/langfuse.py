@@ -165,9 +165,19 @@ def resolve_langfuse_credentials(
     langfuse_host=None,
     allow_env_credentials: bool = True,
 ):
-    if allow_env_credentials is False and langfuse_host is not None:
+    if allow_env_credentials is False:
         secret_key = langfuse_secret or langfuse_secret_key
         public_key = langfuse_public_key
+        missing_fields: Final = tuple(
+            field
+            for field, value in (("langfuse_public_key", public_key), ("langfuse_secret", secret_key))
+            if not value
+        )
+        if missing_fields:
+            raise ValueError(
+                "Langfuse credentials without environment fallback need both langfuse_public_key and "
+                f"langfuse_secret (or langfuse_secret_key). Missing: {', '.join(missing_fields)}"
+            )
     else:
         secret_key = langfuse_secret or langfuse_secret_key or os.getenv("LANGFUSE_SECRET_KEY")
         public_key = langfuse_public_key or os.getenv("LANGFUSE_PUBLIC_KEY")

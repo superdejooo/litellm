@@ -1,23 +1,43 @@
 import sys
 from types import ModuleType, SimpleNamespace
 
+import pytest
+
 import litellm
 from litellm.integrations.langfuse.langfuse import resolve_langfuse_credentials
 from litellm.integrations.langfuse.langfuse_handler import LangFuseHandler
 
 
-def test_resolve_langfuse_credentials_does_not_use_env_for_dynamic_host(monkeypatch):
-    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "global-public")
-    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "global-secret")
+@pytest.mark.parametrize("langfuse_host", ("https://request-project.example", None))
+@pytest.mark.parametrize(
+    ("langfuse_public_key", "langfuse_secret", "langfuse_secret_key", "missing"),
+    (
+        (None, None, None, "langfuse_public_key, langfuse_secret"),
+        ("", "", "", "langfuse_public_key, langfuse_secret"),
+        ("pk-request-synthetic", None, None, "langfuse_secret"),
+        ("pk-request-synthetic", "", "", "langfuse_secret"),
+        (None, "sk-request-synthetic", None, "langfuse_public_key"),
+        ("", None, "sk-request-synthetic", "langfuse_public_key"),
+    ),
+)
+def test_resolve_langfuse_credentials_without_env_fallback_requires_both_keys(
+    monkeypatch, langfuse_host, langfuse_public_key, langfuse_secret, langfuse_secret_key, missing
+):
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-operator-synthetic")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-operator-synthetic")
 
-    public_key, secret_key, host = resolve_langfuse_credentials(
-        langfuse_host="https://attacker.example",
-        allow_env_credentials=False,
-    )
+    with pytest.raises(ValueError) as error:
+        resolve_langfuse_credentials(
+            langfuse_public_key=langfuse_public_key,
+            langfuse_secret=langfuse_secret,
+            langfuse_secret_key=langfuse_secret_key,
+            langfuse_host=langfuse_host,
+            allow_env_credentials=False,
+        )
 
-    assert public_key is None
-    assert secret_key is None
-    assert host == "https://attacker.example"
+    assert str(error.value).endswith(f"Missing: {missing}")
+    assert "synthetic" not in str(error.value)
+    assert "request-project" not in str(error.value)
 
 
 def test_resolve_langfuse_credentials_accepts_secret_key_alias_for_dynamic_host(

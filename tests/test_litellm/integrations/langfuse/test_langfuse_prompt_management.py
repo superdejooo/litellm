@@ -1,4 +1,5 @@
 import asyncio
+import base64
 from datetime import datetime
 from types import MappingProxyType, SimpleNamespace
 from typing import Final
@@ -483,3 +484,116 @@ async def test_callback_prompt_manager_renders_from_the_project_the_request_name
     assert messages[0] == {"role": "system", "content": "Summarise launch"}
     assert request_project.called
     assert not default_project.called
+
+
+_REQUEST_HOST: Final = "http://request-project.test"
+
+
+@pytest.fixture
+def operator_langfuse_env(monkeypatch):
+    pytest.importorskip("respx")
+    pytest.importorskip("langfuse.client")
+    monkeypatch.setenv("LANGFUSE_PUBLIC_KEY", "pk-operator-synthetic")
+    monkeypatch.setenv("LANGFUSE_SECRET_KEY", "sk-operator-synthetic")
+    monkeypatch.setenv("LANGFUSE_HOST", "http://operator-project.test")
+    langfuse_client_init.cache_clear()
+    yield
+    langfuse_client_init.cache_clear()
+
+
+async def _render_request_prompt(manager: LangfusePromptManagement, request_credentials: dict) -> list:
+    _, messages, _ = await manager.async_get_chat_completion_prompt(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": "hi"}],
+        non_default_params={},
+        prompt_id="events/summary",
+        prompt_variables={"event": "launch"},
+        dynamic_callback_params={**request_credentials, "langfuse_host": _REQUEST_HOST},
+        litellm_logging_obj=SimpleNamespace(model_call_details={}),
+    )
+    return messages
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_credentials",
+    (
+        {},
+        {"langfuse_public_key": "pk-request-synthetic"},
+        {"langfuse_secret": "sk-request-synthetic"},
+        {"langfuse_secret_key": "sk-request-synthetic"},
+        {"langfuse_public_key": "", "langfuse_secret_key": "sk-request-synthetic"},
+        {"langfuse_public_key": "pk-request-synthetic", "langfuse_secret": ""},
+        {"langfuse_public_key": None, "langfuse_secret": None, "langfuse_secret_key": None},
+    ),
+    ids=(
+        "no-keys",
+        "public-only",
+        "secret-only",
+        "secret-key-alias-only",
+        "empty-public",
+        "empty-secret",
+        "explicit-none",
+    ),
+)
+async def test_request_prompt_client_with_incomplete_credentials_never_sends_operator_keys(
+    operator_langfuse_env, request_credentials
+):
+    import respx
+
+    manager: Final = LangfusePromptManagement()
+    with respx.mock(assert_all_called=False) as langfuse_api:
+        any_request: Final = langfuse_api.route().mock(return_value=httpx.Response(500))
+        with pytest.raises(ValueError) as error:
+            await _render_request_prompt(manager, request_credentials)
+
+    assert "Missing: langfuse_" in str(error.value)
+    assert "synthetic" not in str(error.value)
+    assert "request-project.test" not in str(error.value)
+    assert not any_request.called
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_credentials", "expected_public_key"),
+    (
+        (
+            {"langfuse_public_key": "pk-request-synthetic", "langfuse_secret": "sk-request-synthetic"},
+            "pk-request-synthetic",
+        ),
+        (
+            {"langfuse_public_key": "pk-request-synthetic", "langfuse_secret_key": "sk-request-synthetic"},
+            "pk-request-synthetic",
+        ),
+        ({"langfuse_public_key": " ", "langfuse_secret": "sk-request-synthetic"}, " "),
+    ),
+    ids=("secret", "secret-key-alias", "whitespace-public-is-used-verbatim"),
+)
+async def test_request_prompt_client_with_complete_credentials_authenticates_as_the_request(
+    operator_langfuse_env, request_credentials, expected_public_key
+):
+    import respx
+
+    manager: Final = LangfusePromptManagement()
+    with respx.mock(assert_all_called=False) as langfuse_api:
+        request_project: Final = langfuse_api.get(
+            url__regex=r"^http://request-project\.test/api/public/v2/prompts/"
+        ).mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "name": "events/summary",
+                    "version": 3,
+                    "prompt": "Summarise {{event}}",
+                    "config": {},
+                    "labels": ["production"],
+                    "tags": [],
+                    "type": "text",
+                },
+            )
+        )
+        messages: Final = await _render_request_prompt(manager, request_credentials)
+
+    expected_auth: Final = base64.b64encode(f"{expected_public_key}:sk-request-synthetic".encode()).decode()
+    assert messages[0] == {"role": "system", "content": "Summarise launch"}
+    assert request_project.calls.last.request.headers["authorization"] == f"Basic {expected_auth}"
