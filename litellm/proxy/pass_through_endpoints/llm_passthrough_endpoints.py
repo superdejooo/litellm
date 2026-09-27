@@ -327,7 +327,7 @@ async def gemini_proxy_route(
         custom_llm_provider="gemini",
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_GEMINI_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
     if gemini_api_key is None:
         raise Exception(
@@ -392,7 +392,7 @@ async def cohere_proxy_route(
         custom_llm_provider="cohere",
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_COHERE_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
 
     ## check for streaming
@@ -518,7 +518,7 @@ async def mistral_proxy_route(
         custom_llm_provider="mistral",
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_MISTRAL_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
 
     ## check for streaming
@@ -563,7 +563,7 @@ async def typesafe_proxy_route(
         custom_llm_provider="typesafe",
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_TYPESAFE_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
     endpoint_func: Final = create_pass_through_route(
         endpoint=endpoint,
@@ -601,7 +601,7 @@ async def openrouter_proxy_route(
         custom_llm_provider="openrouter",
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_OPENROUTER_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
     endpoint_func: Final = create_pass_through_route(
         endpoint=endpoint,
@@ -792,7 +792,7 @@ async def anthropic_proxy_route(
         custom_llm_provider="anthropic",
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_ANTHROPIC_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
 
     ## check for streaming
@@ -2436,7 +2436,7 @@ async def openai_proxy_route(
         custom_llm_provider=litellm.LlmProviders.OPENAI.value,
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_OPENAI_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
     if openai_api_key is None:
         raise Exception("Required 'OPENAI_API_KEY' in environment to make pass-through calls to OpenAI.")
@@ -2611,7 +2611,7 @@ async def openai_websocket_proxy_route(
         custom_llm_provider=litellm.LlmProviders.OPENAI.value,
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_OPENAI_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
     if openai_api_key is None:
         await websocket.close(
@@ -2774,7 +2774,7 @@ async def cursor_proxy_route(
         custom_llm_provider="cursor",
         region_name=None,
         target_api_base=base_target_url,
-        provider_default_api_base=_CURSOR_DEFAULT_API_BASE,
+        provider_default_api_base=base_target_url,
     )
 
     if cursor_api_key is None:

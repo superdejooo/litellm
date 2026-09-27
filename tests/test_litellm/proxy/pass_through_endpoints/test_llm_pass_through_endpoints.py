@@ -5726,17 +5726,16 @@ async def test_every_provider_route_keeps_a_foreign_host_deployment_key_off_its_
 @pytest.mark.parametrize(
     "anthropic_api_base, deployment_api_base",
     [
-        ("https://api.minimax.io/anthropic", None),
+        ("https://api.minimax.io/anthropic", "https://api.anthropic.com"),
         ("http://api.anthropic.com", "https://api.anthropic.com"),
         ("https://api.anthropic.com:8443", "https://api.anthropic.com"),
     ],
 )
 async def test_anthropic_route_sends_a_deployment_key_only_to_its_own_origin(
-    monkeypatch: pytest.MonkeyPatch, anthropic_api_base: str, deployment_api_base: str | None
+    monkeypatch: pytest.MonkeyPatch, anthropic_api_base: str, deployment_api_base: str
 ) -> None:
-    api_base_param: Final = {} if deployment_api_base is None else {"api_base": deployment_api_base}
     create_route, _ = _route_passthrough_calls(
-        monkeypatch, [_flagged("anthropic/claude-fable-5", _FOREIGN_DEPLOYMENT_KEY, **api_base_param)]
+        monkeypatch, [_flagged("anthropic/claude-fable-5", _FOREIGN_DEPLOYMENT_KEY, api_base=deployment_api_base)]
     )
     monkeypatch.setenv("ANTHROPIC_API_BASE", anthropic_api_base)
     monkeypatch.setenv("ANTHROPIC_API_KEY", _ENV_PROVIDER_KEY)
@@ -5750,6 +5749,50 @@ async def test_anthropic_route_sends_a_deployment_key_only_to_its_own_origin(
 
     assert _FOREIGN_DEPLOYMENT_KEY not in repr(create_route.call_args_list)
     assert _ENV_PROVIDER_KEY in repr(create_route.call_args_list)
+
+
+_OWN_BASE_DEPLOYMENT_KEY: Final = "deployment-key-for-the-env-base"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route, model, base_env_var, takes_user_api_key_dict",
+    [
+        (openai_proxy_route, "openai/gpt-4o", "OPENAI_API_BASE", True),
+        (cohere_proxy_route, "cohere/embed-english-v3.0", "COHERE_API_BASE", True),
+        (mistral_proxy_route, "mistral/mistral-large-latest", "MISTRAL_API_BASE", True),
+        (gemini_proxy_route, "gemini/gemini-2.5-pro", "GEMINI_API_BASE", False),
+        (openrouter_proxy_route, "openrouter/openai/gpt-4o", "OPENROUTER_API_BASE", True),
+        (cursor_proxy_route, "cursor/agent", "CURSOR_API_BASE", True),
+        (anthropic_proxy_route, "anthropic/claude-fable-5", "ANTHROPIC_API_BASE", True),
+        (anthropic_proxy_route, "anthropic/claude-fable-5", "ANTHROPIC_BASE_URL", True),
+    ],
+)
+async def test_a_deployment_without_api_base_sends_its_key_to_the_env_overridden_base(
+    monkeypatch: pytest.MonkeyPatch, route, model: str, base_env_var: str, takes_user_api_key_dict: bool
+) -> None:
+    create_route, openai_handler = _route_passthrough_calls(
+        monkeypatch,
+        [
+            _flagged(model, _FOREIGN_DEPLOYMENT_KEY, api_base="https://api.meta.ai"),
+            _flagged(model, _OWN_BASE_DEPLOYMENT_KEY),
+        ],
+    )
+    monkeypatch.setenv(base_env_var, "https://llm-gateway.corp.example/v1")
+    user_api_key_kwargs: Final = (
+        {"user_api_key_dict": UserAPIKeyAuth(api_key="virtual-key")} if takes_user_api_key_dict else {}
+    )
+
+    await route(
+        endpoint="models",
+        request=_passthrough_request(),
+        fastapi_response=MagicMock(spec=Response),
+        **user_api_key_kwargs,
+    )
+
+    forwarded: Final = repr((create_route.call_args_list, openai_handler.call_args_list))
+    assert any(form in forwarded for form in _key_forms(_OWN_BASE_DEPLOYMENT_KEY))
+    assert not any(form in forwarded for form in _key_forms(_FOREIGN_DEPLOYMENT_KEY))
 
 
 @pytest.mark.asyncio
